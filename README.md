@@ -122,3 +122,15 @@ We sincerely thank the authors of following open-source projects:
   publisher={Cold Spring Harbor Laboratory}
 }
 ```
+
+The GEO metadata file is derived from the work from the ClockBase. If you use that metadata, please also cite our ClockBase paper.
+
+```bibtex
+@article{ying2023clockbase,
+  title={ClockBase: a comprehensive platform for biological age profiling in human and mouse},
+  author={Ying, K. and Tyshkovskiy, A. and Trapp, A. and Liu, H. and Moqri, M. and Kerepesi, C. and Gladyshev, V.N.},
+  journal={bioRxiv},
+  year={2023},
+  doi={10.1101/2023.02.28.530532}
+}
+```
