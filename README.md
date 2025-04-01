@@ -8,7 +8,7 @@ This is the official codebase for **methylGPT : a foundation model for the DNA m
 
 [![Preprint](https://img.shields.io/badge/preprint-available-brightgreen)](https://www.biorxiv.org/content/10.1101/2024.10.30.621013v2) &nbsp;
 [![PyPI version](https://badge.fury.io/py/scgpt.svg)](https://pypi.org/project/methylgpt/) &nbsp;
-[![License](https://img.shields.io/badge/license-CC%20BY--NC-blue)](https://github.com/username/repo/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/license-Apache-blue)](https://github.com/albert-ying/MethylGPT/blob/main/LICENSE)
 
 **!UPDATE**: 
 
@@ -38,8 +38,8 @@ pip install wandb
 For developing, we are using the [Poetry](https://python-poetry.org/) package manager. To install Poetry, follow the instructions [here](https://python-poetry.org/docs/#installation).
 
 ```bash
-$ git clone this-repo-url
-$ cd MethylGPT_clean
+$ git clone https://github.com/albert-ying/MethylGPT
+$ cd MethylGPT
 $ poetry install
 ```
 
