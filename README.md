@@ -12,6 +12,8 @@ This is the official codebase for **methylGPT : a foundation model for the DNA m
 
 **!UPDATE**: 
 
+**[2025.02.18]** We released our training dataset comprising 226,555 human DNA methylation profiles from 5,281 datasets - the largest training data set available for DNA methylation  
+
 **[2025.02.10]** methylGPT is now available on PyPI
 
 **[2024.12.10]** We made initial launching of the methylGPT codebase.
