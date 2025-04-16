@@ -31,13 +31,23 @@ def split_files(files, valid_ratio):
     split_index = int(np.floor(num_files * (1 - valid_ratio)))
     return files[:split_index], files[split_index:]
 
-# Create datasets
-def create_dataloader(parquet_files, batch_size):
+def create_dataloader(parquet_files, batch_size, num_workers=None, max_workers=8):
     dataset = CustomDataset(parquet_files)
+    
+    # If num_workers is not specified, try to detect automatically
+    if num_workers is None:
+        try:
+            num_workers = len(os.sched_getaffinity(0))
+            # If num_workers is too high, cap it
+            num_workers = min(num_workers, max_workers, len(parquet_files))
+        except Exception:
+            # Fallback to a reasonable default if detection fails
+            num_workers = min(4, len(parquet_files))
+    
     return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        num_workers=len(os.sched_getaffinity(0)),
-        pin_memory=True,
+        dataset, 
+        batch_size=batch_size, 
+        num_workers=num_workers,
+        pin_memory=True, 
         prefetch_factor=4
     )
