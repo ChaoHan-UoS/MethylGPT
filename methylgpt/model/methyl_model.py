@@ -91,13 +91,19 @@ class MethylGPTModel(TransformerModel):
         mask_value=self.config['mask_value']
         pad_token=self.config['pad_token']
         pad_value=self.config['pad_value']
-
-        #methyl_data = batch["data"].astype(np.float32)
+        
+        # Properly define methyl_data from batch['data']
+        methyl_data = batch["data"]
+        if isinstance(methyl_data, torch.Tensor):
+            methyl_data = methyl_data.float()  # Convert to float if it's a tensor
+        else:
+            methyl_data = methyl_data.astype(np.float32)
+        
         methyl_data = torch.nan_to_num(methyl_data, nan=pad_value)
-
+        
+        # Convert to numpy if it's still a tensor
         if isinstance(methyl_data, torch.Tensor):
             methyl_data = methyl_data.numpy()
-
         # Tokenize the data
         tokenized_data = tokenize_and_pad_batch(
             methyl_data,
