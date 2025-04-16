@@ -52,7 +52,7 @@ The primary pretraining code is implemented in `methylgpt.pretraining.py`. Durin
 
 For a detailed walkthrough of the pretraining process, refer to our step-by-step examples in the [pretraining tutorials](tutorials/pretraining).
 
-## # Pretrained methylGPT Models
+## Pretrained methylGPT Models
 
 This repository provides access to our suite of pretraining models for DNA methylation analysis. The major data sources for pretraining are derived from a comprehensive collection of human DNA methylation profiles.
 
