@@ -64,6 +64,15 @@ We collected a total of **226,555 human DNA methylation profiles** aggregated fr
 |--------------------------------------|---------------------|--------------------------|----------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------|
 | EWAS Data Hub & Clockbase (Combined) | 5,281               | 226,555                  | Aggregated high-quality human DNA methylation profiles curated for pretraining purposes.     | [EWAS Data Hub](https://bigd.big.ac.cn/ewas/datahub) • [Clockbase](https://clockbase.org)     |
 
+
+### Pretraining Dataset
+
+MethylGPT leverages one of the largest DNA methylation corpora ever assembled, comprising **226,555 human DNA methylation profiles** meticulously collected from **5,281 datasets** across two complementary resources: EWAS Data Hub and Clockbase. This unprecedented scale enables our foundation model to capture the complex patterns and variations in the human methylome across diverse tissue types, conditions, and developmental stages. Our comprehensive preprocessing pipeline ensures high-quality input data, with pre-processed datasets readily available for download. This extensive pretraining corpus forms the backbone of MethylGPT's remarkable ability to generalize across methylation tasks and generate biologically meaningful predictions, even in low-data settings.
+
+- **Preprocessed dataset type3 (default)**: [Download here](https://www.dropbox.com/scl/fi/bbs6sxlkpbx11rhyvdfto/processed_type3_parquet_shuffled.tar.gz?rlkey=s73utmumq6xldmv3y6kh9bz75&st=8pslwy2a&dl=0)  
+- **Preprocessed dataset CpG IDs type3 (default)**: [Download here](https://www.dropbox.com/scl/fi/2n6bx7j8v0aon0kwfsghp/probe_ids_type3.csv?rlkey=ly133xlce1xxjiku6tiski6qq&st=pig4e41h&dl=0)
+
+
 ### Available Pretraining Models
 
 Our current suite of pretraining models includes the following architectures available for download:
