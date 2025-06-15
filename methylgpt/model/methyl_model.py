@@ -86,46 +86,56 @@ class MethylGPTModel(TransformerModel):
         
 
     def prepare_data(self, batch):
-        max_seq_len=self.config['max_seq_len']
-        mask_ratio=self.config['mask_ratio']
-        mask_value=self.config['mask_value']
-        pad_token=self.config['pad_token']
-        pad_value=self.config['pad_value']
-        
-        # Properly define methyl_data from batch['data']
-        methyl_data = batch["data"]
-        if isinstance(methyl_data, torch.Tensor):
-            methyl_data = methyl_data.float()  # Convert to float if it's a tensor
-        else:
-            methyl_data = methyl_data.astype(np.float32)
-        
-        methyl_data = torch.nan_to_num(methyl_data, nan=pad_value)
-        
-        # Convert to numpy if it's still a tensor
-        if isinstance(methyl_data, torch.Tensor):
-            methyl_data = methyl_data.numpy()
+        # Retrieve config values
+        max_seq_len = self.config['max_seq_len']
+        mask_ratio = self.config['mask_ratio']
+        mask_value = self.config['mask_value']
+        pad_token = self.config['pad_token']
+        pad_value = self.config['pad_value']
+        # Use config for these flags, with defaults matching common usage or your snippet
+        append_cls = self.config.get("append_cls", True)
+        include_zero_gene = self.config.get("include_zero_gene", True) # From your snippet; scGPT often False
+
+        # batch["data"] is a PyTorch Tensor [batch_size, num_features]
+        methyl_data_tensor = batch["data"]
+
+        # Ensure float type and handle NaNs using PyTorch operations
+        methyl_data_tensor = methyl_data_tensor.float()
+        methyl_data_tensor = torch.nan_to_num(methyl_data_tensor, nan=float(pad_value))
+
+        # Convert to NumPy array for the tokenizer
+        # Ensure tensor is on CPU before converting to NumPy
+        methyl_data_numpy = methyl_data_tensor.cpu().numpy()
+
         # Tokenize the data
+        # The second argument should be the list of all CpG IDs from the vocabulary.
+        # Assuming self.vocab.CpG_ids holds this list, as per your provided snippet.
+        if not hasattr(self.vocab, 'CpG_ids'):
+            # Fallback or error if CpG_ids is not the correct attribute name
+            # This might be self.vocab.CpG_list or another name depending on MethylVocab implementation
+            raise AttributeError("MethylVocab instance does not have 'CpG_ids' attribute. Please verify attribute name for the list of all CpG sites.")
+
         tokenized_data = tokenize_and_pad_batch(
-            methyl_data,
-            self.vocab.CpG_ids,
+            methyl_data_numpy,          # First argument: batch data as 2D NumPy array
+            self.vocab.CpG_ids,         # Second argument: list of all CpG IDs in the vocab space
             max_len=max_seq_len,
             vocab=self.vocab,
             pad_token=pad_token,
             pad_value=pad_value,
-            append_cls=True,
-            include_zero_gene=True,
+            append_cls=append_cls, 
+            include_zero_gene=include_zero_gene,
         )
 
-        # Apply masking
-        masked_values = random_mask_value(
-            tokenized_data["values"],
+        # Apply masking to the padded values
+        masked_input_values = random_mask_value(
+            tokenized_data["values"], 
             mask_ratio=mask_ratio,
             mask_value=mask_value,
-            pad_value=pad_value,
+            pad_value=pad_value, 
         )
 
         return {
-            "gene_ids": tokenized_data["genes"],
-            "values": masked_values,
-            "target_values": tokenized_data["values"],
+            "gene_ids": tokenized_data["genes"],       
+            "values": masked_input_values,            
+            "target_values": tokenized_data["values"], 
         }
