@@ -81,15 +81,15 @@ Our current suite of pretraining models includes the following architectures ava
 
 | Model                | Embedding Dimension | Layers | Heads | Parameters | Download Link                                                                                           |
 |----------------------|---------------------|--------|-------|------------|---------------------------------------------------------------------------------------------------------|
-| **methylGPT-tiny**   | 64                  | 6      | 4     | 3M         | [Download Tiny](https://drive.google.com/drive/folders/1kWdmkkVQpU17uzUC6-wpNR_4UEdxGx6k?usp=share_link)   |
-| **methylGPT-small**  | 128                 | 6      | 4     | 7M         | [Download Small](https://drive.google.com/drive/folders/14M4wdS83el9PAgh9TdfjSCeEcDPbz34f?usp=sharing)     |
-| **methylGPT-medium** | 256                 | 6      | 4     | 15M        | [Download Normal](https://drive.google.com/drive/folders/1lt8SF9MvoytPN3DeaxIss_ED9zNpf_Le?usp=share_link) |
+| **methylGPT-base**   | 64                  | 6      | 4     | 3M         | [Download base](https://drive.google.com/drive/folders/1kWdmkkVQpU17uzUC6-wpNR_4UEdxGx6k?usp=share_link)   |
+| **methylGPT-medium**  | 128                 | 6      | 4     | 7M         | [Download medium](https://drive.google.com/drive/folders/14M4wdS83el9PAgh9TdfjSCeEcDPbz34f?usp=sharing)     |
+| **methylGPT-large** | 256                 | 6      | 4     | 15M        | [Download large](https://drive.google.com/drive/folders/1lt8SF9MvoytPN3DeaxIss_ED9zNpf_Le?usp=share_link) |
 
 Choose the appropriate model size based on your computational resources and intended use:
 
-- **Tiny:** Ideal for lightweight experiments and quick prototyping.
-- **Small:** Suitable for moderate computational resources and intermediate analyses.
-- **Medium:** Recommended for comprehensive studies and robust analytical tasks.
+- **base:** Ideal for lightweight experiments and quick prototyping.
+- **medium:** Suitable for moderate computational resources and intermediate analyses.
+- **large:** Recommended for comprehensive studies and robust analytical tasks.
 
 
 ### Usage
