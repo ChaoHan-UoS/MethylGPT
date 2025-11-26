@@ -1,2 +1,7 @@
 chunk_file_name,path,num_cells_in_chunk,num_features_per_cell
-all_cells_chunk_0.parquet,/Entropy/Projects/multimodal/kying/A.Y/project/MethylGPT/tutorials/pretraining/parquet_files/all_cells_chunk_0.parquet,119,49156
+all_cells_chunk_0.parquet,/Users/chan/Projects/MethylGPT/tutorials/pretraining/parquet_files/all_cells_chunk_0.parquet,20,49156
+all_cells_chunk_1.parquet,/Users/chan/Projects/MethylGPT/tutorials/pretraining/parquet_files/all_cells_chunk_1.parquet,20,49156
+all_cells_chunk_2.parquet,/Users/chan/Projects/MethylGPT/tutorials/pretraining/parquet_files/all_cells_chunk_2.parquet,20,49156
+all_cells_chunk_3.parquet,/Users/chan/Projects/MethylGPT/tutorials/pretraining/parquet_files/all_cells_chunk_3.parquet,20,49156
+all_cells_chunk_4.parquet,/Users/chan/Projects/MethylGPT/tutorials/pretraining/parquet_files/all_cells_chunk_4.parquet,20,49156
+all_cells_chunk_5.parquet,/Users/chan/Projects/MethylGPT/tutorials/pretraining/parquet_files/all_cells_chunk_5.parquet,19,49156

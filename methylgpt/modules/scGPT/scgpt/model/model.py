@@ -13,11 +13,9 @@ from tqdm import trange
 
 try:
     from flash_attn.flash_attention import FlashMHA
-
     flash_attn_available = True
 except ImportError:
     import warnings
-
     warnings.warn("flash_attn is not installed")
     flash_attn_available = False
 
@@ -28,7 +26,7 @@ from .grad_reverse import grad_reverse
 class TransformerModel(nn.Module):
     def __init__(
         self,
-        ntoken: int,
+        ntoken: int,  # len(methyl_vocab)=49159
         d_model: int,
         nhead: int,
         d_hid: int,
@@ -38,7 +36,6 @@ class TransformerModel(nn.Module):
         vocab: Any = None,
         dropout: float = 0.5,
         pad_token: str = "<pad>",
-        pad_value: int = 0,
         do_mvc: bool = False,
         do_dab: bool = False,
         use_batch_labels: bool = False,
@@ -82,23 +79,25 @@ class TransformerModel(nn.Module):
                 use_fast_transformer = False
         self.use_fast_transformer = use_fast_transformer
 
+        # ========= Encoders =========
+        # Position Encoder
         # TODO: add dropout in the GeneEncoder
         self.encoder = GeneEncoder(ntoken, d_model, padding_idx=vocab[pad_token])
 
-        # Value Encoder, NOTE: the scaling style is also handled in _encode method
+        # Value encoder, NOTE: the scaling style is also handled in _encode method
         if input_emb_style == "continuous":
             self.value_encoder = ContinuousValueEncoder(d_model, dropout)
         elif input_emb_style == "category":
             assert n_input_bins > 0
             self.value_encoder = CategoryValueEncoder(
-                n_input_bins, d_model, padding_idx=pad_value
+                n_input_bins, d_model, padding_idx=vocab[pad_token]
             )
         else:
             self.value_encoder = nn.Identity()  # nn.Softmax(dim=1)
             # TODO: consider row-wise normalization or softmax
             # TODO: Correct handle the mask_value when using scaling
 
-        # Batch Encoder
+        # Batch encoder
         if use_batch_labels:
             self.batch_encoder = BatchLabelEncoder(num_batch_labels, d_model)
 
@@ -112,6 +111,7 @@ class TransformerModel(nn.Module):
             print("Using simple batchnorm instead of domain specific batchnorm")
             self.bn = nn.BatchNorm1d(d_model, eps=6.1e-5)
 
+        # ========= Transformer blocks =========
         if use_fast_transformer:
             if fast_transformer_backend == "linear":
                 self.transformer_encoder = FastTransformerEncoderWrapper(
@@ -133,20 +133,23 @@ class TransformerModel(nn.Module):
             )
             self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
 
+        # ========= Decoders =========
+        # MLM task
         self.decoder = ExprDecoder(
             d_model,
             explicit_zero_prob=explicit_zero_prob,
             use_batch_labels=use_batch_labels,
         )
+        # Classification task
         self.cls_decoder = ClsDecoder(d_model, n_cls, nlayers=nlayers_cls)
         if do_mvc:
+            # Profile reconstruction task
             self.mvc_decoder = MVCDecoder(
                 d_model,
                 arch_style=mvc_decoder_style,
                 explicit_zero_prob=explicit_zero_prob,
                 use_batch_labels=use_batch_labels,
             )
-
         if do_dab:
             self.grad_reverse_discriminator = AdversarialDiscriminator(
                 d_model,
@@ -156,7 +159,6 @@ class TransformerModel(nn.Module):
 
         self.sim = Similarity(temp=0.5)  # TODO: auto set temp
         self.creterion_cce = nn.CrossEntropyLoss()
-
         self.init_weights()
 
     def init_weights(self) -> None:
@@ -166,7 +168,7 @@ class TransformerModel(nn.Module):
 
     def _encode(
         self,
-        src: Tensor,
+        src: Tensor,  # (batch, seq_len)
         values: Tensor,
         src_key_padding_mask: Tensor,
         batch_labels: Optional[Tensor] = None,  # (batch,)
@@ -197,16 +199,17 @@ class TransformerModel(nn.Module):
         return output  # (batch, seq_len, embsize)
 
     def _get_cell_emb_from_layer(
-        self, layer_output: Tensor, weights: Tensor = None
+        self,
+        layer_output: Tensor,
+        weights: Tensor = None
     ) -> Tensor:
         """
         Args:
-            layer_output(:obj:`Tensor`): shape (batch, seq_len, embsize)
-            weights(:obj:`Tensor`): shape (batch, seq_len), optional and only used
-                when :attr:`self.cell_emb_style` is "w-pool".
+            layer_output: (batch, seq_len, embsize)
+            weights: (batch, seq_len), optional and only used when`self.cell_emb_style` is "w-pool".
 
         Returns:
-            :obj:`Tensor`: shape (batch, embsize)
+            cell_emb: (batch, embsize)
         """
         if self.cell_emb_style == "cls":
             cell_emb = layer_output[:, 0, :]  # (batch, embsize)
@@ -219,7 +222,6 @@ class TransformerModel(nn.Module):
                 raise ValueError("weights should be 2D")
             cell_emb = torch.sum(layer_output * weights.unsqueeze(2), dim=1)
             cell_emb = F.normalize(cell_emb, p=2, dim=1)  # (batch, embsize)
-
         return cell_emb
 
     def _check_batch_labels(self, batch_labels: Tensor) -> None:
@@ -313,8 +315,8 @@ class TransformerModel(nn.Module):
 
     def forward(
         self,
-        src: Tensor,
-        values: Tensor,
+        src: Tensor,        # position tokens (CpG site ids)
+        values: Tensor,     # value tokens (beta values)
         src_key_padding_mask: Tensor,
         batch_labels: Optional[Tensor] = None,
         CLS: bool = False,
@@ -322,22 +324,20 @@ class TransformerModel(nn.Module):
         MVC: bool = False,
         ECS: bool = False,
         do_sample: bool = False,
-        return_all_embeddings=False,  # Add this parameter
     ) -> Mapping[str, Tensor]:
         """
         Args:
-            src (:obj:`Tensor`): token ids, shape [batch_size, seq_len]
-            values (:obj:`Tensor`): token values, shape [batch_size, seq_len]
-            src_key_padding_mask (:obj:`Tensor`): mask for src, shape [batch_size,
-                seq_len]
-            batch_labels (:obj:`Tensor`): batch labels, shape [batch_size]
-            CLS (:obj:`bool`): if True, return the celltype classification objective
+            src: position tokens (CpG site ids), [batch, n_CpG_sites + 1]
+            values: value tokens (beta values), [batch, n_CpG_sites + 1]
+            src_key_padding_mask: attention mask, [batch, n_CpG_sites + 1]
+            batch_labels: bacth labels, [batch,]
+            CLS: if True, return the celltype classification objective
                 (CLS) output
-            CCE (:obj:`bool`): if True, return the contrastive cell embedding objective
+            CCE: if True, return the contrastive cell embedding objective
                 (CCE) output
-            MVC (:obj:`bool`): if True, return the masked value prediction for cell
+            MVC: if True, return the masked value prediction for cell
                 embedding MVC output
-            ECS (:obj:`bool`): if True, return the elastic cell similarity objective
+            ECS: if True, return the elastic cell similarity objective
                 (ECS) output.
 
         Returns:
@@ -345,7 +345,7 @@ class TransformerModel(nn.Module):
         """
         transformer_output = self._encode(
             src, values, src_key_padding_mask, batch_labels
-        )
+        )  # (batch, seq_len, embsize)
         if self.use_batch_labels:
             batch_emb = self.batch_encoder(batch_labels)  # (batch, embsize)
 
@@ -354,11 +354,9 @@ class TransformerModel(nn.Module):
             transformer_output
             if not self.use_batch_labels
             else torch.cat(
-                [
-                    transformer_output,
-                    batch_emb.unsqueeze(1).repeat(1, transformer_output.shape[1], 1),
-                ],
-                dim=2,
+                [transformer_output,
+                 batch_emb.unsqueeze(1).repeat(1, transformer_output.shape[1], 1)],
+                dim=2
             ),
             # else transformer_output + batch_emb.unsqueeze(1),
         )
@@ -371,7 +369,7 @@ class TransformerModel(nn.Module):
             output["mlm_zero_probs"] = mlm_output["zero_probs"]
 
         cell_emb = self._get_cell_emb_from_layer(transformer_output, values)
-        output["cell_emb"] = cell_emb
+        output["cell_emb"] = cell_emb  # (batch, embsize)
 
         if CLS:
             output["cls_output"] = self.cls_decoder(cell_emb)  # (batch, n_cls)
@@ -735,6 +733,9 @@ class GeneEncoder(nn.Module):
         self.enc_norm = nn.LayerNorm(embedding_dim)
 
     def forward(self, x: Tensor) -> Tensor:
+        """
+        x: Tensor, shape [batch, seq_len]
+        """
         x = self.embedding(x)  # (batch, seq_len, embsize)
         x = self.enc_norm(x)
         return x
@@ -756,8 +757,7 @@ class PositionalEncoding(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         """
-        Args:
-            x: Tensor, shape [seq_len, batch_size, embedding_dim]
+        x: Tensor, shape [seq_len, batch_size, embedding_dim]
         """
         x = x + self.pe[: x.size(0)]
         return self.dropout(x)
@@ -767,7 +767,6 @@ class ContinuousValueEncoder(nn.Module):
     """
     Encode real number values to a vector using neural nets projection.
     """
-
     def __init__(self, d_model: int, dropout: float = 0.1, max_value: int = 512):
         super().__init__()
         self.dropout = nn.Dropout(p=dropout)
@@ -779,14 +778,10 @@ class ContinuousValueEncoder(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         """
-        Args:
-            x: Tensor, shape [batch_size, seq_len]
+        x: Tensor, shape [batch, seq_len]
         """
-        # TODO: test using actual embedding layer if input is categorical
-        # expand last dimension
         x = x.unsqueeze(-1)
-        # clip x to [-inf, max_value]
-        x = torch.clamp(x, max=self.max_value)
+        x = torch.clamp(x, max=self.max_value)  # clip x to [-inf, max_value]
         x = self.activation(self.linear1(x))
         x = self.linear2(x)
         x = self.norm(x)
@@ -836,7 +831,6 @@ class Similarity(nn.Module):
     """
     Dot product or cosine similarity
     """
-
     def __init__(self, temp):
         super().__init__()
         self.temp = temp
@@ -847,6 +841,9 @@ class Similarity(nn.Module):
 
 
 class ExprDecoder(nn.Module):
+    """
+    Decoder for a MLM task to predict masked values.
+    """
     def __init__(
         self,
         d_model: int,
@@ -873,15 +870,17 @@ class ExprDecoder(nn.Module):
             )
 
     def forward(self, x: Tensor) -> Dict[str, Tensor]:
-        """x is the output of the transformer, (batch, seq_len, d_model)"""
+        """
+        x is the output of the transformer, (batch, seq_len, d_model)
+        """
         pred_value = self.fc(x).squeeze(-1)  # (batch, seq_len)
-
         if not self.explicit_zero_prob:
             return dict(pred=pred_value)
+
         zero_logits = self.zero_logit(x).squeeze(-1)  # (batch, seq_len)
         zero_probs = torch.sigmoid(zero_logits)
         return dict(pred=pred_value, zero_probs=zero_probs)
-        # TODO: note that the return currently is only for training. Since decoder
+        #TODO: note that the return currently is only for training. Since decoder
         # is not used in the test setting for the integration task, the eval/inference
         # logic is not implemented yet. However, remember to implement it when
         # the decoder is used in any test setting. The inference logic will need
@@ -890,9 +889,8 @@ class ExprDecoder(nn.Module):
 
 class ClsDecoder(nn.Module):
     """
-    Decoder for classification task.
+    Decoder for a classification task using <cls> token embedding.
     """
-
     def __init__(
         self,
         d_model: int,
@@ -901,7 +899,6 @@ class ClsDecoder(nn.Module):
         activation: callable = nn.ReLU,
     ):
         super().__init__()
-        # module list
         self._decoder = nn.ModuleList()
         for i in range(nlayers - 1):
             self._decoder.append(nn.Linear(d_model, d_model))
@@ -911,19 +908,17 @@ class ClsDecoder(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         """
-        Args:
-            x: Tensor, shape [batch_size, embsize]
+        x: Tensor, shape [batch_size, embsize]
         """
         for layer in self._decoder:
             x = layer(x)
-        return self.out_layer(x)
+        return self.out_layer(x)  # (batch_size, n_cls)
 
 
 class MVCDecoder(nn.Module):
     """
-    Decoder for the masked value prediction for cell embeddings.
+    Decoder for a profile reconstruction task using <cls> token embedding, queried by gene id embeddings
     """
-
     def __init__(
         self,
         d_model: int,
@@ -935,13 +930,11 @@ class MVCDecoder(nn.Module):
     ) -> None:
         """
         Args:
-            d_model (:obj:`int`): dimension of the gene embedding.
-            arch_style (:obj:`str`): architecture style of the decoder, choice from
+            d_model: dim of the gene embedding.
+            arch_style: architecture style of the decoder, choice from
                 1. "inner product" or 2. "concat query" or 3. "sum query".
-            query_activation (:obj:`nn.Module`): activation function for the query
-                vectors.
-            hidden_activation (:obj:`nn.Module`): activation function for the hidden
-                layers.
+            query_activation: activation function for the query vectors.
+            hidden_activation: activation function for the hidden layers.
         """
         super().__init__()
         d_in = d_model * 2 if use_batch_labels else d_model
@@ -980,10 +973,9 @@ class MVCDecoder(nn.Module):
         """
         gene_embs = gene_embs.detach() if self.do_detach else gene_embs
         if self.arch_style in ["inner product", "inner product, detach"]:
-            query_vecs = self.query_activation(self.gene2query(gene_embs))
+            query_vecs = self.query_activation(self.gene2query(gene_embs))  # (batch, seq_len, embsize)
             cell_emb = cell_emb.unsqueeze(2)  # (batch, embsize, 1)
-            # the pred gene expr values, # (batch, seq_len)
-            pred_value = torch.bmm(self.W(query_vecs), cell_emb).squeeze(2)
+            pred_value = torch.bmm(self.W(query_vecs), cell_emb).squeeze(2)  # (batch, seq_len)
             if not self.explicit_zero_prob:
                 return dict(pred=pred_value)
             # zero logits need to based on the cell_emb, because of input exprs
@@ -1015,7 +1007,6 @@ class AdversarialDiscriminator(nn.Module):
     """
     Discriminator for the adversarial training for batch correction.
     """
-
     def __init__(
         self,
         d_model: int,
@@ -1036,8 +1027,7 @@ class AdversarialDiscriminator(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         """
-        Args:
-            x: Tensor, shape [batch_size, embsize]
+        x: Tensor, shape [batch_size, embsize]
         """
         if self.reverse_grad:
             x = grad_reverse(x, lambd=1.0)

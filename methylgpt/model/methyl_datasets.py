@@ -5,15 +5,15 @@ import torch
 from torch.utils.data import IterableDataset, DataLoader
 from pathlib import Path
 
+
 class CustomDataset(IterableDataset):
-    def __init__(self, parquet_chunk_files, input_normalization=False): # Removed pad_value
+    def __init__(self, parquet_chunk_files, input_normalization=False):
         """
         Dataset to read from Parquet files where each file contains a chunk of cells.
         Each row in a Parquet file is expected to have an 'id' (cell_id) and 
         a 'data' column (list of methylation values, already ordered by preprocessing).
         """
         self.parquet_chunk_files = parquet_chunk_files
-        # self.pad_value = pad_value # Removed
         self.input_normalization = input_normalization
 
         if self.input_normalization:
@@ -37,7 +37,8 @@ class CustomDataset(IterableDataset):
                 methylation_values_list = row['data']
                 
                 if not isinstance(methylation_values_list, (list, np.ndarray)):
-                    print(f"Warning: 'data' for cell_id {cell_id} in chunk {file_path} is not a list or ndarray. Type: {type(methylation_values_list)}. Skipping cell.")
+                    print(f"Warning: 'data' for cell_id {cell_id} in chunk {file_path} is not a list or ndarray. \
+                            Type: {type(methylation_values_list)}. Skipping cell.")
                     continue
                 
                 try:
@@ -47,7 +48,8 @@ class CustomDataset(IterableDataset):
                          print(f"Warning: 'data' for cell_id {cell_id} is not 1D. Shape: {data_array.shape}. Skipping cell.")
                          continue
                 except ValueError as ve:
-                    print(f"Warning: Could not convert 'data' to numeric array for cell_id {cell_id} in chunk {file_path}. Error: {ve}. Skipping cell.")
+                    print(f"Warning: Could not convert 'data' to numeric array for cell_id {cell_id} in chunk {file_path}. \
+                            Error: {ve}. Skipping cell.")
                     continue
                 
                 # Yields raw data; tokenization/masking will be done in the training script
@@ -61,10 +63,10 @@ def split_files(files, valid_ratio):
     return files[:split_index], files[split_index:]
 
 
-def create_dataloader(parquet_chunk_files, batch_size, num_workers=None, max_workers=8): # Removed pad_value
+def create_dataloader(parquet_chunk_files, batch_size, num_workers=None, max_workers=12):
     # methyl_vocab and config removed from arguments
-    dataset = CustomDataset(parquet_chunk_files) # Removed pad_value=pad_value
-    
+    dataset = CustomDataset(parquet_chunk_files)
+
     effective_num_files = len(parquet_chunk_files)
     if effective_num_files == 0:
         print("Warning: No Parquet chunk files provided to create_dataloader. DataLoader will be empty.")
@@ -75,16 +77,13 @@ def create_dataloader(parquet_chunk_files, batch_size, num_workers=None, max_wor
             num_cpus = len(os.sched_getaffinity(0))
             num_workers = min(num_cpus, max_workers, effective_num_files if effective_num_files > 0 else 1)
             num_workers = max(1 if effective_num_files > 0 else 0, num_workers)
-        except AttributeError: 
+        except AttributeError:
             num_cpus = os.cpu_count()
             num_workers = min(num_cpus if num_cpus is not None else 1, max_workers, effective_num_files if effective_num_files > 0 else 1)
             num_workers = max(1 if effective_num_files > 0 else 0, num_workers)
         except Exception:
             num_workers = min(4, max_workers, effective_num_files if effective_num_files > 0 else 1)
             num_workers = max(1 if effective_num_files > 0 else 0, num_workers)
-    
-    if effective_num_files == 0: # Ensure num_workers is 0 if no files
-        num_workers = 0
 
     dataloader_args = {
         "batch_size": batch_size,
@@ -96,7 +95,4 @@ def create_dataloader(parquet_chunk_files, batch_size, num_workers=None, max_wor
         dataloader_args["prefetch_factor"] = 2 
         # dataloader_args["persistent_workers"] = True # Consider for IterableDataset if appropriate
     
-    return DataLoader(
-        dataset, 
-        **dataloader_args
-    )
+    return DataLoader(dataset, **dataloader_args)

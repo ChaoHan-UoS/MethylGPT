@@ -6,7 +6,11 @@ def masked_mse_loss(
     input: torch.Tensor, target: torch.Tensor, mask: torch.Tensor
 ) -> torch.Tensor:
     """
-    Compute the masked MSE loss between input and target.
+    Compute the MSE loss between input and target on the masked positions.
+    Args:
+        input/target/mask: (bs, seq_len)
+    Returns:
+        loss: scalar tensor
     """
     mask = mask.float()
     loss = F.mse_loss(input * mask, target * mask, reduction="sum")

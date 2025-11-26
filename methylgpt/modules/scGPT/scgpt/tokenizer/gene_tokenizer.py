@@ -257,17 +257,17 @@ def tokenize_batch(
     cls_id_mod_type: int = None,
 ) -> List[Tuple[Union[torch.Tensor, np.ndarray]]]:
     """
-    Tokenize a batch of data. Returns a list of tuple (gene_id, count).
+    Group CpG site ids with their methylation values. Add <cls> id and 0 value at beginning of
+    gene_ids and each sample of data respectively if append_cls is True.
 
     Args:
-        data (array-like): A batch of data, with shape (batch_size, n_features).
-            n_features equals the number of all genes.
-        gene_ids (array-like): A batch of gene ids, with shape (n_features,).
-        return_pt (bool): Whether to return torch tensors of gene_ids and counts,
-            default to True.
+        data: array with shape (bs, n_CpGs)
+        gene_ids: array with shape (n_CpGs,)
 
     Returns:
-        list: A list of tuple (gene_id, count) of non zero gene expressions.
+        a list of bs tuple (gene_id, values of each sample, mod_type)
+    Example:
+        [(tensor([1, 3, 4, ... 49158]), tensor([ 0.0000, -2.0000, 0.3023, ... -2.0000]), None), ... ]
     """
     if data.shape[1] != len(gene_ids):
         raise ValueError(
@@ -290,22 +290,25 @@ def tokenize_batch(
             if mod_type is not None:
                 mod_types = mod_type
         else:
-            idx = np.nonzero(row)[0]
+            idx = np.nonzero(row)[0]  # get indices of non-zero data
             values = row[idx]
             genes = gene_ids[idx]
             if mod_type is not None:
                 mod_types = mod_type[idx]
+
         if append_cls:
-            genes = np.insert(genes, 0, cls_id)
-            values = np.insert(values, 0, 0)
+            genes = np.insert(genes, 0, cls_id)  # insert <cls> id at the beginning of CpG ids
+            values = np.insert(values, 0, 0)  # insert 0 corresponding to <cls>
             if mod_type is not None:
                 mod_types = np.insert(mod_types, 0, cls_id_mod_type)
+
         if return_pt:
             genes = torch.from_numpy(genes).long()
             values = torch.from_numpy(values).float()
             if mod_type is not None:
                 mod_types = torch.from_numpy(mod_types).long()
         tokenized_data.append((genes, values, mod_types))
+
     return tokenized_data
 
 
@@ -319,17 +322,18 @@ def pad_batch(
     vocab_mod: Vocab = None,
 ) -> Dict[str, torch.Tensor]:
     """
-    Pad a batch of data. Returns a list of Dict[gene_id, count].
+    Pad a batch of tokenized data to the maximum length
 
     Args:
-        batch (list): A list of tuple (gene_id, count).
-        max_len (int): The maximum length of the batch.
-        vocab (Vocab): The vocabulary containing the pad token.
-        pad_token (str): The token to pad with.
+        batch: a list of bs tuple (gene_id, values of each sample, mod_type)
 
     Returns:
-        Dict[str, torch.Tensor]: A dictionary of gene_id and count.
+        a dict of gene_id and data with shape (bs, max_len)
+    Example:
+        {'genes': tensor([[1, 3, 4, ... 49158], ... ],
+         'values': tensor([[ 0.0000, -2.0000, 0.3023, ... -2.0000], ... ])}
     """
+    # determine the max length across batched samples for padding
     max_ori_len = max(len(batch[i][0]) for i in range(len(batch)))
     max_len = min(max_ori_len, max_len)
 
@@ -355,31 +359,18 @@ def pad_batch(
             values = values[idx]
             if mod_types is not None:
                 mod_types = mod_types[idx]
+
         if len(gene_ids) < max_len:
             gene_ids = torch.cat(
-                [
-                    gene_ids,
-                    torch.full(
-                        (max_len - len(gene_ids),), pad_id, dtype=gene_ids.dtype
-                    ),
-                ]
+                [gene_ids, torch.full((max_len - len(gene_ids),), pad_id, dtype=gene_ids.dtype)]
             )
             values = torch.cat(
-                [
-                    values,
-                    torch.full((max_len - len(values),), pad_value, dtype=values.dtype),
-                ]
+                [values, torch.full((max_len - len(values),), pad_value, dtype=values.dtype)]
             )
             if mod_types is not None:
                 mod_types = torch.cat(
-                    [
-                        mod_types,
-                        torch.full(
-                            (max_len - len(mod_types),),
-                            mod_pad_id,
-                            dtype=mod_types.dtype,
-                        ),
-                    ]
+                    [mod_types,
+                     torch.full((max_len - len(mod_types),), mod_pad_id, dtype=mod_types.dtype)]
                 )
 
         gene_ids_list.append(gene_ids)
@@ -393,6 +384,7 @@ def pad_batch(
     }
     if mod_types is not None:
         batch_padded["mod_types"] = torch.stack(mod_types_list, dim=0)
+
     return batch_padded
 
 
@@ -411,7 +403,14 @@ def tokenize_and_pad_batch(
     vocab_mod: Vocab = None,
 ) -> Dict[str, torch.Tensor]:
     """
-    Tokenize and pad a batch of data. Returns a list of tuple (gene_id, count).
+    Tokenize and pad a batch of data.
+
+    Args:
+        data: array with shape (bs, n_CpGs)
+        gene_ids: array with shape (n_CpGs,)
+
+    Returns:
+        a dict of CpG site ids and data tensors of shape (bs, n_CpGs + 1)
     """
     cls_id = vocab[cls_token]
     if mod_type is not None:
@@ -447,29 +446,27 @@ def random_mask_value(
     mask_seed: int = 42,
 ) -> torch.Tensor:
     """
-    Randomly mask a batch of data.
+    Randomly mask non-padding values in the batch data with mask_value according to mask_ratio
 
     Args:
-        values (array-like):
-            A batch of tokenized data, with shape (batch_size, n_features).
-        mask_ratio (float): The ratio of genes to mask, default to 0.15.
-        mask_value (int): The value to mask with, default to -1.
-        pad_value (int): The value of padding in the values, will be kept unchanged.
+        values: a batch of beta values, with shape (bs, n_CpGs + 1)
 
     Returns:
-        torch.Tensor: A tensor of masked data.
+        a batch of masked beta values, with shape (bs, n_CpGs + 1)
     """
     np.random.seed(mask_seed)
     if isinstance(values, torch.Tensor):
-        # it is crutial to clone the tensor, otherwise it changes the original tensor
+        # it is crucial to clone the tensor, otherwise it changes the original tensor
         values = values.clone().detach().numpy()
     else:
         values = values.copy()
 
+    #TODO: apply 80/10/10 corruption to masked positions
     for i in range(len(values)):
         row = values[i]
         non_padding_idx = np.nonzero(row - pad_value)[0]
         n_mask = int(len(non_padding_idx) * mask_ratio)
         mask_idx = np.random.choice(non_padding_idx, n_mask, replace=False)
         row[mask_idx] = mask_value
+
     return torch.from_numpy(values).float()

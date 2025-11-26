@@ -1,6 +1,5 @@
 {
     "seed": 42,
-    "device": "cuda:0",
     "data_type": "3",
     "savename": "pretraining_test",
     "data_dir": "data/QCed_samples_type3.csv",
@@ -20,9 +19,9 @@
     "nhead": 4,
     "dropout": 0.1,
     "schedule_ratio": 0.9,
-    "save_eval_interval": 5,
+    "save_epoch_interval": 5,
     "save_every_epoch": 5,
-    "log_interval": 1000,
+    "log_batch_interval": 4,
     "fast_transformer": true,
     "pre_norm": false,
     "amp": true,

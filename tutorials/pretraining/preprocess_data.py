@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
 import argparse
-import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
 from pathlib import Path
 import gzip
 import os
+
 import numpy as np
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
-CELL_CHUNK_SIZE = 5000
 
-def process_to_cell_chunked_parquet(input_raw_csv_dir_str: str, probe_id_ref_path_str: str, output_metadata_dir_str: str, output_parquet_base_dir_str: str):
+# CELL_CHUNK_SIZE = 5000
+CELL_CHUNK_SIZE = 20
+
+
+def process_to_cell_chunked_parquet(
+        input_raw_csv_dir_str: str,
+        probe_id_ref_path_str: str,
+        output_metadata_dir_str: str,
+        output_parquet_base_dir_str: str
+):
     input_raw_csv_dir = Path(input_raw_csv_dir_str)
     probe_id_ref_path = Path(probe_id_ref_path_str)
     output_metadata_dir = Path(output_metadata_dir_str)
@@ -35,8 +44,6 @@ def process_to_cell_chunked_parquet(input_raw_csv_dir_str: str, probe_id_ref_pat
         print(f"Error loading reference probe IDs: {e}")
         return
 
-    all_cells_data_list = []
-
     # Collect all .csv and .csv.gz files
     raw_csv_files = []
     for f in sorted(input_raw_csv_dir.iterdir()):
@@ -45,9 +52,9 @@ def process_to_cell_chunked_parquet(input_raw_csv_dir_str: str, probe_id_ref_pat
                 raw_csv_files.append(f)
             else:
                 print(f"Skipping non-CSV file: {f.name}")
-
     print(f"Found {len(raw_csv_files)} raw CSV files to process.")
 
+    all_cells_data_list = []
     for csv_file_path in raw_csv_files:
         print(f"Processing file: {csv_file_path.name}")
         try:
@@ -68,12 +75,13 @@ def process_to_cell_chunked_parquet(input_raw_csv_dir_str: str, probe_id_ref_pat
             sample_columns = df_raw.columns
 
             for cell_id in sample_columns:
+                # Extract methylation values from raw .csv files in the order of reference probe IDs,
+                # filling missing with NaN
                 ordered_values = [
                     pd.to_numeric(df_raw.loc[probe_id, cell_id], errors='coerce') if probe_id in df_raw.index else np.nan
                     for probe_id in master_probe_id_order
                 ]
                 all_cells_data_list.append({"id": str(cell_id), "data": ordered_values})
-
             print(f"  Finished extracting {len(sample_columns)} samples.")
         except Exception as e:
             print(f"  Error processing file {csv_file_path.name}: {e}")
@@ -85,7 +93,6 @@ def process_to_cell_chunked_parquet(input_raw_csv_dir_str: str, probe_id_ref_pat
 
     all_cells_df = pd.DataFrame(all_cells_data_list)
     print(f"Total cells processed: {len(all_cells_df)}")
-
     final_parquet_chunk_metadata = []
     for i in range(0, len(all_cells_df), CELL_CHUNK_SIZE):
         chunk_df = all_cells_df.iloc[i:i + CELL_CHUNK_SIZE]
@@ -97,6 +104,7 @@ def process_to_cell_chunked_parquet(input_raw_csv_dir_str: str, probe_id_ref_pat
             table = pa.Table.from_pandas(chunk_df, preserve_index=False)
             pq.write_table(table, parquet_path)
             print(f"  Saved: {parquet_path.name} with {len(chunk_df)} cells.")
+
             final_parquet_chunk_metadata.append({
                 'chunk_file_name': parquet_chunk_filename,
                 'path': str(parquet_path.resolve()),
@@ -104,7 +112,7 @@ def process_to_cell_chunked_parquet(input_raw_csv_dir_str: str, probe_id_ref_pat
                 'num_features_per_cell': len(master_probe_id_order)
             })
         except Exception as e:
-            print(f"    Error writing chunk {parquet_chunk_filename}: {e}")
+            print(f"  Error writing chunk {parquet_chunk_filename}: {e}")
             continue
 
     if final_parquet_chunk_metadata:
@@ -115,14 +123,19 @@ def process_to_cell_chunked_parquet(input_raw_csv_dir_str: str, probe_id_ref_pat
     else:
         print("No chunks saved. Skipping metadata.")
 
-    print("✅ Done: All valid CSV files processed and saved to Parquet.")
+    print("Done: All valid CSV files processed and saved to Parquet.")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Preprocess raw methylation CSV data to chunked Parquet files.")
-    parser.add_argument("--input_raw_csv_dir", type=str, required=True, help="Directory with raw CSV or CSV.gz files.")
-    parser.add_argument("--probe_id_ref_path", type=str, required=True, help="Reference CSV with 'illumina_probe_id' column.")
-    parser.add_argument("--output_metadata_dir", type=str, required=True, help="Directory for output metadata CSV.")
-    parser.add_argument("--output_parquet_base_dir", type=str, required=True, help="Base directory for parquet_files/")
+    parser.add_argument("--input_raw_csv_dir", type=str, default="data_examples",
+                        help="Directory with raw CSV or CSV.gz files.")
+    parser.add_argument("--probe_id_ref_path", type=str, default="probe_ids_type3.csv",
+                        help="Reference CSV with 'illumina_probe_id' column.")
+    parser.add_argument("--output_metadata_dir", type=str, default=".",
+                        help="Directory for output metadata CSV.")
+    parser.add_argument("--output_parquet_base_dir", type=str, default=".",
+                        help="Base directory for parquet_files/")
 
     args = parser.parse_args()
 

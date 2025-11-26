@@ -1,8 +1,8 @@
 import sys
 from pathlib import Path
 
-sys.path.append(str(Path(__file__).resolve().parent.parent / "modules" / "scGPT"))
-current_directory = Path(__file__).parent.absolute()
+# sys.path.append(str(Path(__file__).resolve().parent.parent / "modules" / "scGPT"))
+# current_directory = Path(__file__).parent.absolute()
 
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 from scipy.stats import spearmanr, pearsonr
@@ -15,17 +15,18 @@ from tqdm import tqdm
 import json
 import numpy as np
 import torch
-import lightning as pl
+# import lightning as pl
 from sklearn.linear_model import ElasticNet
 import math
 import pickle
 from torch import nn, Tensor
 from typing import Dict, Mapping, Optional, Tuple, Any, Union
 
+
 class MethylGPTModel(TransformerModel):
     def __init__(self, config, vocab):
         super().__init__(
-            len(vocab),
+            len(vocab),            # 49159
             config["layer_size"],
             config["nhead"],
             config["layer_size"],
@@ -33,7 +34,6 @@ class MethylGPTModel(TransformerModel):
             vocab=vocab,
             dropout=config["dropout"],
             pad_token=vocab.pad_token,
-            pad_value=vocab[vocab.pad_token],
             do_mvc=True,
             do_dab=False,
             use_batch_labels=False,
@@ -44,7 +44,6 @@ class MethylGPTModel(TransformerModel):
             explicit_zero_prob=False,
             use_fast_transformer=config["fast_transformer"],
             pre_norm=config["pre_norm"])
-
         self.vocab = vocab
         self.config= config
         self.validation_step_outputs = []
@@ -62,7 +61,6 @@ class MethylGPTModel(TransformerModel):
         cell_embeddings = output_dict["cell_emb"]
             
         return cell_embeddings
-    
     
     @classmethod
     def from_pretrained(self, config, vocab):
@@ -83,41 +81,38 @@ class MethylGPTModel(TransformerModel):
                     print(f"Loading params {k} with shape {v.shape}")
                 model_dict.update(pretrained_dict)
                 self.load_state_dict(model_dict)
-        
 
     def prepare_data(self, batch):
+        """
+        batch: {'id': list of bs sample ids, 'data': Tensor of shape [bs, num_CpG_sites]}
+        Prepares the input data by tokenizing, padding, and applying random masking.
+        """
         # Retrieve config values
         max_seq_len = self.config['max_seq_len']
         mask_ratio = self.config['mask_ratio']
         mask_value = self.config['mask_value']
         pad_token = self.config['pad_token']
         pad_value = self.config['pad_value']
-        # Use config for these flags, with defaults matching common usage or your snippet
         append_cls = self.config.get("append_cls", True)
-        include_zero_gene = self.config.get("include_zero_gene", True) # From your snippet; scGPT often False
+        include_zero_gene = self.config.get("include_zero_gene", True)  # From your snippet; scGPT often False
 
-        # batch["data"] is a PyTorch Tensor [batch_size, num_features]
+        # Replace NaN (missing from reference probe IDs) with pad_value
         methyl_data_tensor = batch["data"]
-
-        # Ensure float type and handle NaNs using PyTorch operations
         methyl_data_tensor = methyl_data_tensor.float()
         methyl_data_tensor = torch.nan_to_num(methyl_data_tensor, nan=float(pad_value))
 
-        # Convert to NumPy array for the tokenizer
-        # Ensure tensor is on CPU before converting to NumPy
+        # Ensure tensor is on CPU and convert it to array for the tokenizer
         methyl_data_numpy = methyl_data_tensor.cpu().numpy()
 
-        # Tokenize the data
-        # The second argument should be the list of all CpG IDs from the vocabulary.
-        # Assuming self.vocab.CpG_ids holds this list, as per your provided snippet.
         if not hasattr(self.vocab, 'CpG_ids'):
-            # Fallback or error if CpG_ids is not the correct attribute name
-            # This might be self.vocab.CpG_list or another name depending on MethylVocab implementation
             raise AttributeError("MethylVocab instance does not have 'CpG_ids' attribute. Please verify attribute name for the list of all CpG sites.")
 
+        # A dict of CpG site ids and their beta value tensors of shape (bs, n_CpGs + 1):
+        # {'genes': tensor([[1, 3, 4, ... 49158], ... ],
+        #  'values': tensor([[ 0.0000, -2.0000, 0.3023, ... -2.0000], ... ])}
         tokenized_data = tokenize_and_pad_batch(
-            methyl_data_numpy,          # First argument: batch data as 2D NumPy array
-            self.vocab.CpG_ids,         # Second argument: list of all CpG IDs in the vocab space
+            methyl_data_numpy,          # 2D array
+            self.vocab.CpG_ids,         # all CpG IDs from the vocab: array([3, 4, 5, ... 49158])
             max_len=max_seq_len,
             vocab=self.vocab,
             pad_token=pad_token,
@@ -126,7 +121,7 @@ class MethylGPTModel(TransformerModel):
             include_zero_gene=include_zero_gene,
         )
 
-        # Apply masking to the padded values
+        # Value-level random masking of the beta values
         masked_input_values = random_mask_value(
             tokenized_data["values"], 
             mask_ratio=mask_ratio,
@@ -135,7 +130,7 @@ class MethylGPTModel(TransformerModel):
         )
 
         return {
-            "gene_ids": tokenized_data["genes"],       
-            "values": masked_input_values,            
-            "target_values": tokenized_data["values"], 
+            "gene_ids": tokenized_data["genes"],
+            "values": masked_input_values,
+            "target_values": tokenized_data["values"],
         }
