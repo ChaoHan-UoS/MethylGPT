@@ -11,16 +11,74 @@ from torch.nn import TransformerEncoder, TransformerEncoderLayer
 from torch.distributions import Bernoulli
 from tqdm import trange
 
-try:
-    from flash_attn.flash_attention import FlashMHA
-    flash_attn_available = True
-except ImportError:
-    import warnings
-    warnings.warn("flash_attn is not installed")
-    flash_attn_available = False
-
 from .dsbn import DomainSpecificBatchNorm1d
 from .grad_reverse import grad_reverse
+
+
+class SelfAttention(nn.Module):
+    def __init__(self, d_model, nhead, dropout):
+        super().__init__()
+        assert d_model % nhead == 0
+        # key, query, value projections for all heads, but in a batch
+        self.attn = nn.Linear(d_model, 3 * d_model)
+        # output projection
+        self.proj = nn.Linear(d_model, d_model)
+        self.nhead = nhead
+        self.d_model = d_model
+        self.dropout = nn.Dropout(dropout)  # attention/residual dropout
+
+    def forward(self, x, batch_attn_mask):
+        B, T, C = x.size()
+        qkv = self.attn(x)
+        q, k, v = qkv.split(self.d_model, dim=2)
+        k = k.view(B, T, self.nhead, C // self.nhead).transpose(1, 2) # (B, nh, T, hs)
+        q = q.view(B, T, self.nhead, C // self.nhead).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(B, T, self.nhead, C // self.nhead).transpose(1, 2) # (B, nh, T, hs)
+        batch_attn_mask = batch_attn_mask[:, None, None, :]           # (B, 1, 1, T)
+        y = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=~batch_attn_mask,  # True = keep
+            dropout_p=self.dropout.p if self.training else 0.0
+        ) # flash attention
+        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+        # output projection with residual dropout
+        y = self.dropout(self.c_proj(y))
+        return y
+
+
+class MLP(nn.Module):
+    def __init__(self, d_model, dropout):
+        super().__init__()
+        self.fc = nn.Linear(d_model, 4 * d_model)
+        self.gelu = nn.GELU(approximate='tanh')
+        self.proj = nn.Linear(4 * d_model, d_model)
+        self.dropout = nn.Dropout(dropout)  # residual dropout
+
+    def forward(self, x):
+        x = self.fc(x)
+        x = self.gelu(x)
+        x = self.proj(x)
+        x = self.dropout(x)
+        return x
+
+
+class Block(nn.Module):
+    def __init__(self, d_model, nhead, dropout, pre_norm):
+        super().__init__()
+        self.ln_1 = nn.LayerNorm(d_model)
+        self.attn = SelfAttention(d_model, nhead, dropout)
+        self.ln_2 = nn.LayerNorm(d_model)
+        self.mlp = MLP(d_model, dropout)
+        self.pre_norm = pre_norm
+
+    def forward(self, x, batch_attn_mask):
+        if self.pre_norm:
+            x = x + self.attn(self.ln_1(x))
+            x = x + self.mlp(self.ln_2(x))
+        else:
+            x = self.ln_1(x + self.attn(x))
+            x = self.ln_2(x + self.mlp(x))
+        return x
 
 
 class TransformerModel(nn.Module):
@@ -29,7 +87,6 @@ class TransformerModel(nn.Module):
         ntoken: int,  # len(methyl_vocab)=49159
         d_model: int,
         nhead: int,
-        d_hid: int,
         nlayers: int,
         nlayers_cls: int = 3,
         n_cls: int = 1,
@@ -47,8 +104,6 @@ class TransformerModel(nn.Module):
         mvc_decoder_style: str = "inner product",
         ecs_threshold: float = 0.3,
         explicit_zero_prob: bool = False,
-        use_fast_transformer: bool = False,
-        fast_transformer_backend: str = "flash",
         pre_norm: bool = False,
     ):
         super().__init__()
@@ -61,7 +116,7 @@ class TransformerModel(nn.Module):
         self.input_emb_style = input_emb_style
         self.cell_emb_style = cell_emb_style
         self.explicit_zero_prob = explicit_zero_prob
-        self.norm_scheme = "pre" if pre_norm else "post"
+        self.pre_norm = pre_norm
         if self.input_emb_style not in ["category", "continuous", "scaling"]:
             raise ValueError(
                 f"input_emb_style should be one of category, continuous, scaling, "
@@ -69,15 +124,6 @@ class TransformerModel(nn.Module):
             )
         if cell_emb_style not in ["cls", "avg-pool", "w-pool"]:
             raise ValueError(f"Unknown cell_emb_style: {cell_emb_style}")
-        if use_fast_transformer:
-            if not flash_attn_available:
-                warnings.warn(
-                    "flash-attn is not installed, using pytorch transformer instead. "
-                    "Set use_fast_transformer=False to avoid this warning. "
-                    "Installing flash-attn is highly recommended."
-                )
-                use_fast_transformer = False
-        self.use_fast_transformer = use_fast_transformer
 
         # ========= Encoders =========
         # Position Encoder
@@ -111,27 +157,10 @@ class TransformerModel(nn.Module):
             print("Using simple batchnorm instead of domain specific batchnorm")
             self.bn = nn.BatchNorm1d(d_model, eps=6.1e-5)
 
-        # ========= Transformer blocks =========
-        if use_fast_transformer:
-            if fast_transformer_backend == "linear":
-                self.transformer_encoder = FastTransformerEncoderWrapper(
-                    d_model, nhead, d_hid, nlayers, dropout
-                )
-            elif fast_transformer_backend == "flash":
-                encoder_layers = FlashTransformerEncoderLayer(
-                    d_model,
-                    nhead,
-                    d_hid,
-                    dropout,
-                    batch_first=True,
-                    norm_scheme=self.norm_scheme,
-                )
-                self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
-        else:
-            encoder_layers = TransformerEncoderLayer(
-                d_model, nhead, d_hid, dropout, batch_first=True
-            )
-            self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
+        self.transformer = nn.ModuleDict(dict(
+            h = nn.ModuleList([Block(d_model, nhead, dropout, pre_norm) for _ in range(nlayers)]),
+            ln_f = nn.LayerNorm(d_model) if pre_norm else nn.Identity()
+        ))
 
         # ========= Decoders =========
         # MLM task
@@ -170,7 +199,7 @@ class TransformerModel(nn.Module):
         self,
         src: Tensor,  # (batch, seq_len)
         values: Tensor,
-        src_key_padding_mask: Tensor,
+        batch_attn_mask: Tensor,
         batch_labels: Optional[Tensor] = None,  # (batch,)
     ) -> Tensor:
         self._check_batch_labels(batch_labels)
@@ -193,9 +222,10 @@ class TransformerModel(nn.Module):
         elif getattr(self, "bn", None) is not None:
             total_embs = self.bn(total_embs.permute(0, 2, 1)).permute(0, 2, 1)
 
-        output = self.transformer_encoder(
-            total_embs, src_key_padding_mask=src_key_padding_mask
-        )
+        for block in self.transformer.h:
+            total_embs = block(total_embs, batch_attn_mask)
+        output = self.transformer.ln_f(total_embs) if self.pre_norm else total_embs
+
         return output  # (batch, seq_len, embsize)
 
     def _get_cell_emb_from_layer(
@@ -238,7 +268,7 @@ class TransformerModel(nn.Module):
         cell_emb: Tensor,
         src: Tensor,
         values: Optional[Tensor] = None,
-        src_key_padding_mask: Optional[Tensor] = None,
+        batch_attn_mask: Optional[Tensor] = None,
         gen_iters: int = 1,
         batch_labels: Optional[Tensor] = None,  # (batch,)
     ) -> Tensor:
@@ -247,7 +277,7 @@ class TransformerModel(nn.Module):
             cell_emb(:obj:`Tensor`): shape (batch, embsize)
             src(:obj:`Tensor`): shape (batch, seq_len)
             values(:obj:`Tensor`): shape (batch, seq_len), optional
-            src_key_padding_mask(:obj:`Tensor`): shape (batch, seq_len), optional
+            batch_attn_mask(:obj:`Tensor`): shape (batch, seq_len), optional
             gen_iters(:obj:`int`): number of generation iterations
             batch_labels(:obj:`Tensor`): shape (batch,), optional
         """
@@ -287,8 +317,8 @@ class TransformerModel(nn.Module):
 
         total_embs[:, 0, :] = cell_emb
 
-        if src_key_padding_mask is None:
-            src_key_padding_mask = torch.zeros(
+        if batch_attn_mask is None:
+            batch_attn_mask = torch.zeros(
                 total_embs.shape[:2], dtype=torch.bool, device=total_embs.device
             )
         transformer_output = self.transformer_encoder(
@@ -317,7 +347,7 @@ class TransformerModel(nn.Module):
         self,
         src: Tensor,        # position tokens (CpG site ids)
         values: Tensor,     # value tokens (beta values)
-        src_key_padding_mask: Tensor,
+        batch_attn_mask: Tensor,
         batch_labels: Optional[Tensor] = None,
         CLS: bool = False,
         CCE: bool = False,
@@ -329,7 +359,7 @@ class TransformerModel(nn.Module):
         Args:
             src: position tokens (CpG site ids), [batch, n_CpG_sites + 1]
             values: value tokens (beta values), [batch, n_CpG_sites + 1]
-            src_key_padding_mask: attention mask, [batch, n_CpG_sites + 1]
+            batch_attn_mask: attention mask, [batch, n_CpG_sites + 1]
             batch_labels: bacth labels, [batch,]
             CLS: if True, return the celltype classification objective
                 (CLS) output
@@ -344,7 +374,7 @@ class TransformerModel(nn.Module):
             dict of output Tensors.
         """
         transformer_output = self._encode(
-            src, values, src_key_padding_mask, batch_labels
+            src, values, batch_attn_mask, batch_labels
         )  # (batch, seq_len, embsize)
         if self.use_batch_labels:
             batch_emb = self.batch_encoder(batch_labels)  # (batch, embsize)
@@ -376,7 +406,7 @@ class TransformerModel(nn.Module):
         if CCE:
             cell1 = cell_emb
             transformer_output2 = self._encode(
-                src, values, src_key_padding_mask, batch_labels
+                src, values, batch_attn_mask, batch_labels
             )
             cell2 = self._get_cell_emb_from_layer(transformer_output2)
 
@@ -442,7 +472,7 @@ class TransformerModel(nn.Module):
         self,
         src: Tensor,
         values: Tensor,
-        src_key_padding_mask: Tensor,
+        batch_attn_mask: Tensor,
         batch_size: int,
         batch_labels: Optional[Tensor] = None,
         output_to_cpu: bool = True,
@@ -453,7 +483,7 @@ class TransformerModel(nn.Module):
         Args:
             src (Tensor): shape [N, seq_len]
             values (Tensor): shape [N, seq_len]
-            src_key_padding_mask (Tensor): shape [N, seq_len]
+            batch_attn_mask (Tensor): shape [N, seq_len]
             batch_size (int): batch size for encoding
             batch_labels (Tensor): shape [N, n_batch_labels]
             output_to_cpu (bool): whether to move the output to cpu
@@ -481,7 +511,7 @@ class TransformerModel(nn.Module):
             raw_output = self._encode(
                 src[i : i + batch_size].to(device),
                 values[i : i + batch_size].to(device),
-                src_key_padding_mask[i : i + batch_size].to(device),
+                batch_attn_mask[i : i + batch_size].to(device),
                 batch_labels[i : i + batch_size].to(device)
                 if batch_labels is not None
                 else None,
@@ -501,222 +531,6 @@ class TransformerModel(nn.Module):
 def generate_square_subsequent_mask(sz: int) -> Tensor:
     """Generates an upper-triangular matrix of -inf, with zeros on diag."""
     return torch.triu(torch.ones(sz, sz) * float("-inf"), diagonal=1)
-
-
-class FastTransformerEncoderWrapper(nn.Module):
-    def __init__(
-        self,
-        d_model: int,
-        nhead: int,
-        d_hid: int,
-        nlayers: int,
-        dropout: float = 0.5,
-    ):
-        super().__init__()
-        self.fast_transformer_encoder = self.build_fast_transformer_encoder(
-            d_model, nhead, d_hid, nlayers, dropout
-        )
-
-    @staticmethod
-    def build_fast_transformer_encoder(
-        d_model: int, nhead: int, d_hid: int, nlayers: int, dropout: float
-    ) -> nn.Module:
-        from fast_transformers.builders import TransformerEncoderBuilder
-
-        if d_model % nhead != 0:
-            raise ValueError(
-                f"d_model must be divisible by nhead, "
-                f"got d_model={d_model} and nhead={nhead}"
-            )
-        builder = TransformerEncoderBuilder.from_kwargs(
-            n_layers=nlayers,
-            n_heads=nhead,
-            query_dimensions=d_model // nhead,
-            value_dimensions=d_model // nhead,
-            feed_forward_dimensions=d_hid,
-            attention_type="linear",
-            attention_dropout=dropout,
-            dropout=dropout,
-            activation="gelu",
-        )
-        assert builder.attention_type == "linear"
-        return builder.get()
-
-    @staticmethod
-    def build_length_mask(
-        src: Tensor,
-        src_key_padding_mask: torch.BoolTensor,
-    ) -> "LengthMask":
-        from fast_transformers.masking import LengthMask
-
-        seq_len = src.shape[1]
-        num_paddings = src_key_padding_mask.sum(dim=1)
-        actual_seq_len = seq_len - num_paddings  # (N,)
-        length_mask = LengthMask(actual_seq_len, max_len=seq_len, device=src.device)
-
-        if src_key_padding_mask[length_mask.bool_matrix].sum() != 0:
-            raise ValueError(
-                "Found padding tokens in the middle of the sequence. "
-                "src_key_padding_mask and length_mask are not compatible."
-            )
-        return length_mask
-
-    def forward(
-        self,
-        src: Tensor,
-        src_key_padding_mask: torch.BoolTensor,
-    ) -> Tensor:
-        """
-        Args:
-            src: Tensor, shape [N, seq_len, embsize]
-            src_key_padding_mask: Tensor, shape [N, seq_len]
-
-        Returns:
-            output Tensor of shape [N, seq_len, embsize]
-        """
-        if src_key_padding_mask.shape != src.shape[:2]:
-            raise ValueError(
-                f"src_key_padding_mask shape {src_key_padding_mask.shape} "
-                f"does not match first two dims of src shape {src.shape[:2]}"
-            )
-
-        if src_key_padding_mask.dtype != torch.bool:
-            raise ValueError(
-                f"src_key_padding_mask needs to be of type torch.bool, "
-                f"got {src_key_padding_mask.dtype}"
-            )
-
-        length_mask = self.build_length_mask(src, src_key_padding_mask)
-        output = self.fast_transformer_encoder(src, length_mask=length_mask)
-        return output
-
-
-class FlashTransformerEncoderLayer(nn.Module):
-    r"""TransformerEncoderLayer is made up of self-attn and feedforward network.
-    The class is modified from torch.nn.TransformerEncoderLayer to support the
-    FlashAttention.
-
-    Args:
-        d_model: the number of expected features in the input (required).
-        nhead: the number of heads in the multiheadattention models (required).
-        dim_feedforward: the dimension of the feedforward network model (default=2048).
-        dropout: the dropout value (default=0.1).
-        activation: the activation function of intermediate layer, relu or gelu (default=relu).
-        layer_norm_eps: the eps value in layer normalization components (default=1e-5).
-        batch_first: If ``True``, then the input and output tensors are provided
-            as (batch, seq, feature). Default: ``False``.
-
-    Examples::
-        >>> encoder_layer = nn.TransformerEncoderLayer(d_model=512, nhead=8)
-        >>> src = torch.rand(10, 32, 512)
-        >>> out = encoder_layer(src)
-
-    Alternatively, when ``batch_first`` is ``True``:
-        >>> encoder_layer = nn.TransformerEncoderLayer(d_model=512, nhead=8, batch_first=True)
-        >>> src = torch.rand(32, 10, 512)
-        >>> out = encoder_layer(src)
-    """
-    __constants__ = ["batch_first"]
-
-    def __init__(
-        self,
-        d_model,
-        nhead,
-        dim_feedforward=2048,
-        dropout=0.1,
-        activation="relu",
-        layer_norm_eps=1e-5,
-        batch_first=True,
-        device=None,
-        dtype=None,
-        norm_scheme="post",  # "pre" or "post"
-    ) -> None:
-        factory_kwargs = {"device": device, "dtype": dtype}
-        super().__init__()
-        self.self_attn = FlashMHA(
-            embed_dim=d_model,
-            num_heads=nhead,
-            batch_first=batch_first,
-            attention_dropout=dropout,
-            **factory_kwargs,
-        )
-        # Version compatibility workaround
-        if not hasattr(self.self_attn, "batch_first"):
-            self.self_attn.batch_first = batch_first
-        # Implementation of Feedforward model
-        self.linear1 = nn.Linear(d_model, dim_feedforward, **factory_kwargs)
-        self.dropout = nn.Dropout(dropout)
-        self.linear2 = nn.Linear(dim_feedforward, d_model, **factory_kwargs)
-
-        self.norm1 = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
-        self.norm2 = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
-
-        self.activation = self._get_activation_fn(activation)
-        self.norm_scheme = norm_scheme
-        if self.norm_scheme not in ["pre", "post"]:
-            raise ValueError(f"norm_scheme should be pre or post, not {norm_scheme}")
-
-    @staticmethod
-    def _get_activation_fn(activation):
-        if activation == "relu":
-            return F.relu
-        elif activation == "gelu":
-            return F.gelu
-
-        raise RuntimeError("activation should be relu/gelu, not {}".format(activation))
-
-    def __setstate__(self, state):
-        if "activation" not in state:
-            state["activation"] = F.relu
-        super().__setstate__(state)
-
-    def forward(
-        self,
-        src: Tensor,
-        src_mask: Optional[Tensor] = None,
-        src_key_padding_mask: Optional[Tensor] = None,
-        **kwargs,
-    ) -> Tensor:
-        r"""Pass the input through the encoder layer.
-
-        Args:
-            src: the sequence to the encoder layer (required).
-            src_mask: the mask for the src sequence (optional).
-            src_key_padding_mask: the mask for the src keys per batch (optional).
-
-        Shape:
-            see the docs in Transformer class.
-        """
-        if src_mask is not None:
-            raise ValueError("FlashTransformerEncoderLayer does not support src_mask")
-
-        if not src_key_padding_mask.any().item():
-            # no padding tokens in src
-            src_key_padding_mask_ = None
-        else:
-            if src_key_padding_mask.dtype != torch.bool:
-                src_key_padding_mask = src_key_padding_mask.bool()
-            # NOTE: the FlashMHA uses mask 0 for padding tokens, which is the opposite
-            src_key_padding_mask_ = ~src_key_padding_mask
-
-        if self.norm_scheme == "pre":
-            src = self.norm1(src)
-            src2 = self.self_attn(src, key_padding_mask=src_key_padding_mask_)[0]
-            src = src + self.dropout1(src2)
-            src = self.norm2(src)
-            src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
-            src = src + self.dropout2(src2)
-        else:
-            src2 = self.self_attn(src, key_padding_mask=src_key_padding_mask_)[0]
-            src = src + self.dropout1(src2)
-            src = self.norm1(src)
-            src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
-            src = src + self.dropout2(src2)
-            src = self.norm2(src)
-
-        return src
 
 
 class GeneEncoder(nn.Module):

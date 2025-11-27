@@ -26,28 +26,14 @@ from methylgpt.utils.logging import setup_logger, add_console_handler
 from scgpt.tokenizer import tokenize_and_pad_batch, random_mask_value  # Ensure methylgpt is imported before to initialize paths
 from utils import set_seed, split_files, save_config, make_hash
 
-try:
-    # Auto Mixed Precision
-    from torch.cuda.amp import GradScaler
-    amp_available = torch.cuda.is_available()
-    if not amp_available:
-        warnings.warn("torch.cuda.amp.GradScaler imported but CUDA is not available. AMP will be disabled.")
-except ImportError:
-    amp_available = False
-    warnings.warn("torch.cuda.amp.GradScaler not available. AMP will be disabled.")
-
-try:
-    from flash_attn.flash_attention import FlashMHA
-    flash_attn_available = True
-except ImportError:
-    warnings.warn("flash_attn is not installed")
-    flash_attn_available = False
-
 device = "cpu"
 if torch.cuda.is_available():
     device = "cuda"
 elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     device = "mps"
+device_type = "cuda" if device.startswith("cuda") else "cpu"
+
+torch.set_float32_matmul_precision('high')
 
 # ------------------------ Config & Setup ------------------------
 parser = argparse.ArgumentParser()
@@ -131,9 +117,7 @@ config = dict(
     schedule_ratio=config_from_file.get("schedule_ratio", 0.9),  # ratio of epochs for learning rate schedule
     save_epoch_interval=config_from_file.get("save_epoch_interval", 10),
     log_batch_interval=config_from_file.get("log_batch_interval", 1000),
-    fast_transformer=config_from_file.get("fast_transformer", True) and flash_attn_available, # Ensure flash_attn is available
     pre_norm=config_from_file.get("pre_norm", False),
-    amp=config_from_file.get("amp", True) and amp_available, # Ensure amp is available
 
     # Additional tokens and values
     pad_token=pad_token,
@@ -222,17 +206,6 @@ lr_scheduler = torch.optim.lr_scheduler.StepLR(
     optimizer, step_size=1, gamma=config["schedule_ratio"]
 )  # step_size=1 if called every epoch
 
-scaler = None
-if config["amp"] and device.startswith("cuda"):
-    if amp_available:
-        scaler = GradScaler()
-        logger.info("AMP GradScaler initialized.")
-    else: # amp was configured True but torch.cuda.amp.GradScaler is not available
-        logger.warning("AMP was configured but GradScaler is not available. Disabling AMP for training.")
-        config["amp"] = False # Correctly disable AMP if scaler cannot be used.
-else: # AMP not configured or device is CPU
-    config["amp"] = False
-
 # Load latest checkpoint (with matching config hash and largest epoch) and resume training,
 # otherwise start from scratch
 ckpt_dir = Path('./checkpoints')
@@ -304,13 +277,13 @@ for epoch in range(start_epoch, config["epochs"] + 1):
         # to create the attention mask.
 
         # padding attention mask: boolean tensor [bs, num_CpG_sites + 1]
-        src_key_padding_mask = target_values.eq(config["pad_value"])
+        batch_attn_mask = target_values.eq(config["pad_value"])
 
-        with torch.cuda.amp.autocast(enabled=(config["amp"] and scaler is not None)):
+        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
             output_dict = model(
                 input_gene_ids,
                 input_values,
-                src_key_padding_mask=src_key_padding_mask,
+                batch_attn_mask=batch_attn_mask,
                 MVC=config["GEPC"],
                 ECS=config["ecs_thres"] > 0
             )
@@ -326,17 +299,9 @@ for epoch in range(start_epoch, config["epochs"] + 1):
             else:
                 loss_gepc = torch.tensor(0.0).to(device) # So it can be added to total
 
-        if scaler is not None:
-            scaler.scale(loss).backward()
-            # Consider gradient clipping here if it was in the original and scaler is used
-            # scaler.unscale_(optimizer) # Optional if you need to inspect/clip grads before optimizer.step()
-            # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # Example clipping
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            loss.backward()
-            # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # Example clipping
-            optimizer.step()
+        loss.backward()
+        # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # Example clipping
+        optimizer.step()
 
         bs = input_gene_ids.size(0)
         total_train_loss += loss.item() * bs
@@ -392,13 +357,13 @@ for epoch in range(start_epoch, config["epochs"] + 1):
             input_values_valid = prepared_batch_valid["values"].to(device)
             target_values_valid = prepared_batch_valid["target_values"].to(device)
 
-            src_key_padding_mask_valid = target_values_valid.eq(config["pad_value"])
+            batch_attn_mask_valid = target_values_valid.eq(config["pad_value"])
 
-            with torch.cuda.amp.autocast(enabled=(config["amp"] and scaler is not None)):
+            with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                 output_dict_valid = model(
                     input_gene_ids_valid,
                     input_values_valid,
-                    src_key_padding_mask=src_key_padding_mask_valid,
+                    batch_attn_mask=batch_attn_mask_valid,
                     MVC=config["GEPC"],
                     ECS=config["ecs_thres"] > 0
                 )
@@ -486,13 +451,13 @@ with torch.no_grad():
         input_values_final = prepared_batch_final["values"].to(device)
         target_values_final = prepared_batch_final["target_values"].to(device)
 
-        src_key_padding_mask_final = target_values_final.eq(config["pad_value"])
+        batch_attn_mask_final = target_values_final.eq(config["pad_value"])
 
-        with torch.cuda.amp.autocast(enabled=(config["amp"] and scaler is not None)):
+        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
             output_dict_final = model(
                 input_gene_ids_final,
                 input_values_final,
-                src_key_padding_mask=src_key_padding_mask_final,
+                batch_attn_mask=batch_attn_mask_final,
                 MVC=config["GEPC"],
                 ECS=config["ecs_thres"] > 0
             )

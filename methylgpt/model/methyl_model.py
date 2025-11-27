@@ -29,7 +29,6 @@ class MethylGPTModel(TransformerModel):
             len(vocab),            # 49159
             config["layer_size"],
             config["nhead"],
-            config["layer_size"],
             config["nlayers"],
             vocab=vocab,
             dropout=config["dropout"],
@@ -42,7 +41,6 @@ class MethylGPTModel(TransformerModel):
             n_input_bins=None,
             ecs_threshold=None,
             explicit_zero_prob=False,
-            use_fast_transformer=config["fast_transformer"],
             pre_norm=config["pre_norm"])
         self.vocab = vocab
         self.config= config
