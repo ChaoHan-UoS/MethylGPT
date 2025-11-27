@@ -84,7 +84,7 @@ class Block(nn.Module):
 class TransformerModel(nn.Module):
     def __init__(
         self,
-        ntoken: int,  # len(methyl_vocab)=49159
+        ntoken: int,  # len(methyl_vocab)=49159, padded up to nearest multiple of 64 = 49216
         d_model: int,
         nhead: int,
         nlayers: int,

@@ -26,7 +26,7 @@ from typing import Dict, Mapping, Optional, Tuple, Any, Union
 class MethylGPTModel(TransformerModel):
     def __init__(self, config, vocab):
         super().__init__(
-            len(vocab),            # 49159
+            49216,       # len(vocab)=49159, padded up to nearest multiple of 64 = 49216
             config["layer_size"],
             config["nhead"],
             config["nlayers"],
