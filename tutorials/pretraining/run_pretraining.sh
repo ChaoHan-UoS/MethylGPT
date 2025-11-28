@@ -64,26 +64,26 @@ else
   echo "To enable, edit this script and set ƒ=true."
 fi
 
-echo ""
-echo "--- Starting Training Step ---"
-echo "Executing: python ${TRAIN_SCRIPT} \\"
-echo "    --config_file \"${CONFIG_FILE}\" \\"
-echo "    --savename \"${SAVENAME}\" \\"
-echo "    --probe_id_path \"${PROBE_ID_REF}\" \\"
-echo "    --parquet_data_dir \"${PREPROCESSED_PARQUET_DIR}\" \\"
-echo "    --metadata_file \"${PREPROCESSED_METADATA_FILE}\" \\"
-echo "    \"\$@\" (additional arguments passed to training script)"
-
-python "${TRAIN_SCRIPT}" \
-    --config_file "${CONFIG_FILE}" \
-    --savename "${SAVENAME}" \
-    --probe_id_path "${PROBE_ID_REF}" \
-    --parquet_data_dir "${PREPROCESSED_PARQUET_DIR}" \
-    --metadata_file "${PREPROCESSED_METADATA_FILE}" \
-    "$@"
-
-if [ $? -ne 0 ]; then
-    echo "Training script exited with an error."
-    exit 1
-fi
-echo "--- Training Step Script Invoked ---"
+#echo ""
+#echo "--- Starting Training Step ---"
+#echo "Executing: python ${TRAIN_SCRIPT} \\"
+#echo "    --config_file \"${CONFIG_FILE}\" \\"
+#echo "    --savename \"${SAVENAME}\" \\"
+#echo "    --probe_id_path \"${PROBE_ID_REF}\" \\"
+#echo "    --parquet_data_dir \"${PREPROCESSED_PARQUET_DIR}\" \\"
+#echo "    --metadata_file \"${PREPROCESSED_METADATA_FILE}\" \\"
+#echo "    \"\$@\" (additional arguments passed to training script)"
+#
+#python "${TRAIN_SCRIPT}" \
+#    --config_file "${CONFIG_FILE}" \
+#    --savename "${SAVENAME}" \
+#    --probe_id_path "${PROBE_ID_REF}" \
+#    --parquet_data_dir "${PREPROCESSED_PARQUET_DIR}" \
+#    --metadata_file "${PREPROCESSED_METADATA_FILE}" \
+#    "$@"
+#
+#if [ $? -ne 0 ]; then
+#    echo "Training script exited with an error."
+#    exit 1
+#fi
+#echo "--- Training Step Script Invoked ---"
