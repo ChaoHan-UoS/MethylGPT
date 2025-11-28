@@ -1,6 +1,6 @@
 #!/bin/bash
 
-RUN_PREPROCESSING=false                        # TOCHANGE
+RUN_PREPROCESSING=true                        # TOCHANGE
 # Inputs (expected in the script's execution directory)
 RAW_DATA_DIR="data_examples"                  # TOCHANGE - Directory with raw CSV/CSV.gz files
 PROBE_ID_REF="probe_ids_type3.csv"            # TOCHANGE - Probe ID reference for preprocessing & vocab
