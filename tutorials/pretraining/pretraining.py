@@ -51,8 +51,8 @@ parser.add_argument('--no_wandb', action='store_true', default=False,
                     help="Disable wandb logging")
 
 args = parser.parse_args()
-# LOG_WANDB = not args.no_wandb
-LOG_WANDB = False
+LOG_WANDB = not args.no_wandb
+# LOG_WANDB = False
 
 # Load config from JSON file
 with open(args.config_file, 'r') as f:
@@ -287,7 +287,7 @@ for epoch in range(start_epoch, config["epochs"] + 1):
                 MVC=config["GEPC"],
                 ECS=config["ecs_thres"] > 0
             )
-            import code; code.interact(local=locals())
+            # import code; code.interact(local=locals())
 
             # Only compute MSE loss on masked positions
             loss_positions = input_values.eq(config["mask_value"])
