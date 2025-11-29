@@ -1,9 +1,11 @@
 import os
+import math
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import torch 
-from torch.utils.data import IterableDataset, DataLoader
-from pathlib import Path
+from torch.utils.data import IterableDataset, DataLoader, get_worker_info
 
 
 class CustomDataset(IterableDataset):
@@ -51,7 +53,7 @@ class CustomDataset(IterableDataset):
                     data_array = np.array(methylation_values_list, dtype=float)
                     if data_array.ndim != 1:
                         continue
-                except (ValueError, TypeError):
+                except ValueError:
                     continue
 
                 count += 1
@@ -59,9 +61,9 @@ class CustomDataset(IterableDataset):
         self._length = count
         return self._length
 
-
-    def __iter__(self):
-        for file_path_str in self.parquet_chunk_files:
+    def _iter_files(self, file_indices):
+        for idx in file_indices:
+            file_path_str = self.parquet_chunk_files[idx]
             file_path = Path(file_path_str)
             try:
                 df_chunk = pd.read_parquet(file_path)
@@ -72,29 +74,45 @@ class CustomDataset(IterableDataset):
             if 'id' not in df_chunk.columns or 'data' not in df_chunk.columns:
                 print(f"Warning: 'id' or 'data' column not found in Parquet chunk {file_path}. Skipping this file.")
                 continue
-            
-            for index, row in df_chunk.iterrows():
+
+            for _, row in df_chunk.iterrows():
                 cell_id = str(row['id'])
                 methylation_values_list = row['data']
-                
+
                 if not isinstance(methylation_values_list, (list, np.ndarray)):
-                    print(f"Warning: 'data' for cell_id {cell_id} in chunk {file_path} is not a list or ndarray. \
-                            Type: {type(methylation_values_list)}. Skipping cell.")
+                    print(f"Warning: 'data' for cell_id {cell_id} in chunk {file_path} is not a list or ndarray. "
+                          f"Type: {type(methylation_values_list)}. Skipping cell.")
                     continue
-                
+
                 try:
                     # Ensure data_array is a 1D numpy array of floats
                     data_array = np.array(methylation_values_list, dtype=float)
                     if data_array.ndim != 1:
-                         print(f"Warning: 'data' for cell_id {cell_id} is not 1D. Shape: {data_array.shape}. Skipping cell.")
-                         continue
+                        print(f"Warning: 'data' for cell_id {cell_id} is not 1D. Shape: {data_array.shape}. Skipping cell.")
+                        continue
                 except ValueError as ve:
-                    print(f"Warning: Could not convert 'data' to numeric array for cell_id {cell_id} in chunk {file_path}. \
-                            Error: {ve}. Skipping cell.")
+                    print(f"Warning: Could not convert 'data' to numeric array for cell_id {cell_id} in chunk {file_path}. "
+                          f"Error: {ve}. Skipping cell.")
                     continue
-                
+
                 # Yields raw data; tokenization/masking will be done in the training script
                 yield {"id": cell_id, "data": data_array}
+
+    def __iter__(self):
+        worker_info = get_worker_info()
+        if worker_info is None:
+            # Single-process data loading, iterate over all files
+            file_indices = range(len(self.parquet_chunk_files))
+        else:
+            # Multi-process: split files between workers
+            num_workers = worker_info.num_workers
+            worker_id = worker_info.id
+            per_worker = int(math.ceil(len(self.parquet_chunk_files) / num_workers))
+            start = worker_id * per_worker
+            end = min(start + per_worker, len(self.parquet_chunk_files))
+            file_indices = range(start, end)
+
+        return self._iter_files(file_indices)
 
 
 def split_files(files, valid_ratio):
