@@ -179,8 +179,8 @@ if not parquet_dirs:
 
 train_files, valid_files = split_files(parquet_dirs, valid_ratio=config["valid_ratio"])
 logger.info(f"Loading data from {len(train_files)} training files and {len(valid_files)} validation files")
-# NUM_WORKER = int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count()-2))
-NUM_WORKER = 0  # Set to 0 for debugging
+NUM_WORKER = int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count()-2))
+# NUM_WORKER = 0  # Set to 0 for debugging
 train_dataloader = create_dataloader(train_files, config["batch_size"], num_workers=NUM_WORKER)
 valid_dataloader = create_dataloader(valid_files, config["batch_size"], num_workers=NUM_WORKER)
 
@@ -287,6 +287,7 @@ for epoch in range(start_epoch, config["epochs"] + 1):
                 MVC=config["GEPC"],
                 ECS=config["ecs_thres"] > 0
             )
+            import code; code.interact(local=locals())
 
             # Only compute MSE loss on masked positions
             loss_positions = input_values.eq(config["mask_value"])
