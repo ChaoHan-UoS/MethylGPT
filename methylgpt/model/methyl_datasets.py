@@ -19,6 +19,47 @@ class CustomDataset(IterableDataset):
         if self.input_normalization:
             raise NotImplementedError("Input normalization has not been implemented")
 
+        # cache computed length so we don't rescan files every time
+        self._length = None
+
+    def __len__(self):
+        # Lazily compute and cache the number of valid samples
+        if self._length is not None:
+            return self._length
+
+        count = 0
+        for file_path_str in self.parquet_chunk_files:
+            file_path = Path(file_path_str)
+            try:
+                df_chunk = pd.read_parquet(file_path)
+            except Exception:
+                # If a file can't be read, it's also skipped in __iter__
+                continue
+
+            if 'id' not in df_chunk.columns or 'data' not in df_chunk.columns:
+                # Same logic as __iter__: skip bad files
+                continue
+
+            for _, row in df_chunk.iterrows():
+                methylation_values_list = row['data']
+
+                # Same validity checks as in __iter__
+                if not isinstance(methylation_values_list, (list, np.ndarray)):
+                    continue
+
+                try:
+                    data_array = np.array(methylation_values_list, dtype=float)
+                    if data_array.ndim != 1:
+                        continue
+                except (ValueError, TypeError):
+                    continue
+
+                count += 1
+
+        self._length = count
+        return self._length
+
+
     def __iter__(self):
         for file_path_str in self.parquet_chunk_files:
             file_path = Path(file_path_str)
