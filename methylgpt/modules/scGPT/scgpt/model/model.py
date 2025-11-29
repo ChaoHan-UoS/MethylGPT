@@ -42,7 +42,7 @@ class SelfAttention(nn.Module):
         ) # flash attention
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
         # output projection with residual dropout
-        y = self.dropout(self.c_proj(y))
+        y = self.dropout(self.proj(y))
         return y
 
 
