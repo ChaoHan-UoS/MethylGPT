@@ -379,7 +379,7 @@ for epoch in range(start_epoch, config["epochs"] + 1):
         # import code; code.interact(local=locals())
 
         # batch: {'id': list of bs samples ids, 'data': tensor of shape [bs, num_CpG_sites]}
-        prepared_batch = model.prepare_data(batch)
+        prepared_batch = raw_model.prepare_data(batch)
         # tensors of shape [bs, num_CpG_sites + 1]
         input_gene_ids = prepared_batch["gene_ids"].to(device)      # <cls> + CpG site ids
         input_values = prepared_batch["values"].to(device)          # masked beta values (only mask non-padded positions)
@@ -482,7 +482,7 @@ for epoch in range(start_epoch, config["epochs"] + 1):
         for i, batch in enumerate(pbar_valid):
             if i >= valid_batches_per_epoch:
                 break
-            prepared_batch_valid = model.prepare_data(batch)
+            prepared_batch_valid = raw_model.prepare_data(batch)
 
             input_gene_ids_valid = prepared_batch_valid["gene_ids"].to(device)
             input_values_valid = prepared_batch_valid["values"].to(device)
@@ -593,7 +593,7 @@ with torch.no_grad():
     for i, batch in enumerate(pbar_final_valid):
         if i >= valid_batches_per_epoch:
             break
-        prepared_batch_final = model.prepare_data(batch)
+        prepared_batch_final = raw_model.prepare_data(batch)
 
         input_gene_ids_final = prepared_batch_final["gene_ids"].to(device)
         input_values_final = prepared_batch_final["values"].to(device)
