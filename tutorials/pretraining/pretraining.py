@@ -14,8 +14,12 @@ from collections import Counter, OrderedDict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 
-import torch
 from tqdm import tqdm
+import torch
+from torch.distributed import init_process_group, destroy_process_group
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
+from torch.utils.data import DataLoader
 
 from methylgpt.model.methyl_datasets import create_dataloader
 from methylgpt.model.methyl_model import MethylGPTModel
@@ -26,11 +30,38 @@ from methylgpt.utils.logging import setup_logger, add_console_handler
 from scgpt.tokenizer import tokenize_and_pad_batch, random_mask_value  # Ensure methylgpt is imported before to initialize paths
 from utils import set_seed, split_files, save_config, make_hash
 
-device = "cpu"
-if torch.cuda.is_available():
-    device = "cuda"
-elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-    device = "mps"
+
+# simple launch:
+# python pretraining.py
+# DDP launch for e.g. 2 GPUs:
+# torchrun --standalone --nproc_per_node=2 pretraining.py
+
+# torchrun command sets the env variables RANK, LOCAL_RANK, and WORLD_SIZE
+ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
+if ddp:
+    # use of DDP atm demands CUDA, we set the device appropriately according to rank
+    assert torch.cuda.is_available(), "for now i think we need CUDA for DDP"
+    init_process_group(backend='nccl')
+    ddp_rank = int(os.environ['RANK'])
+    # used in multi-node setting. For multi-GPUs on a single node, this is the GPU id same as ddp_rank
+    ddp_local_rank = int(os.environ['LOCAL_RANK'])
+    ddp_world_size = int(os.environ['WORLD_SIZE'])
+    device = f'cuda:{ddp_local_rank}'
+    torch.cuda.set_device(device)
+    master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
+else:
+    # vanilla, non-DDP run
+    ddp_rank = 0
+    ddp_local_rank = 0
+    ddp_world_size = 1
+    master_process = True
+    # attempt to autodetect device
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = "mps"
+
 device_type = "cuda" if device.startswith("cuda") else "cpu"
 
 torch.set_float32_matmul_precision('high')
@@ -53,12 +84,13 @@ parser.add_argument('--no_wandb', action='store_true', default=False,
 args = parser.parse_args()
 LOG_WANDB = not args.no_wandb
 # LOG_WANDB = False
+wandb = None
 
 # Load config from JSON file
 with open(args.config_file, 'r') as f:
     config_from_file = json.load(f)
 
-if config_from_file.get("do_train", True): # Only init wandb if training
+if master_process and config_from_file.get("do_train", True):
     try:
         if LOG_WANDB:
             import wandb
@@ -80,8 +112,6 @@ if config_from_file.get("do_train", True): # Only init wandb if training
     except Exception as e:
         print(f"Error initializing wanb: {e}")
         wandb = None
-else:
-    wandb = None
 
 # Creates a vocab mapping CpG probe IDs to unique integer indices for model input
 probe_id_path = Path(args.probe_id_path)
@@ -143,25 +173,34 @@ set_seed(config["seed"])
 # Dir for saving logs, config, vocab and checkpoints of this run
 # save_dir = Path(f"save/dev_{config['savename']}-{time.strftime('%b%d-%H-%M')}/")
 save_dir = Path(f"save/dev_{config['savename']}/")
-save_dir.mkdir(parents=True, exist_ok=True)
+if master_process:
+    save_dir.mkdir(parents=True, exist_ok=True)
 
-logger = setup_logger("logger", save_dir / "run.log")
-add_console_handler(logger)
-train_logger = setup_logger("train_logger", save_dir / "train.log")
-add_console_handler(train_logger)
-test_logger = setup_logger("test_logger", save_dir / "test.log")
-add_console_handler(test_logger)
+    logger = setup_logger("logger", save_dir / "run.log")
+    add_console_handler(logger)
+    train_logger = setup_logger("train_logger", save_dir / "train.log")
+    add_console_handler(train_logger)
+    test_logger = setup_logger("test_logger", save_dir / "test.log")
+    add_console_handler(test_logger)
 
-save_config(config, save_dir)
-logger.info(f"Config saved to {save_dir}")
+    save_config(config, save_dir)
+    logger.info(f"Config saved to {save_dir}")
 
-if not (save_dir / "vocab.json").exists():
     methyl_vocab.save_dir = save_dir
-    methyl_vocab._save_vocab()
-    logger.info(f"MethylVocab saved to {save_dir}")
+    if not (save_dir / "vocab.json").exists():
+        methyl_vocab._save_vocab()
+        logger.info(f"MethylVocab saved to {save_dir}")
+    else:
+        logger.info(f"MethylVocab already exists at {save_dir} or will be loaded from there.")
 else:
-    methyl_vocab.save_dir = save_dir
-    logger.info(f"MethylVocab already exists at {save_dir} or will be loaded from there.")
+    # dummy loggers that do nothing
+    logger = logging.getLogger("dummy_logger")
+    train_logger = logging.getLogger("dummy_train_logger")
+    test_logger = logging.getLogger("dummy_test_logger")
+    for lg in (logger, train_logger, test_logger):
+        lg.addHandler(logging.NullHandler())
+
+    methyl_vocab.save_dir = save_dir  # so paths are consistent
 
 # ------------------------ Data Preparation ------------------------
 parquet_dirs = []
@@ -179,10 +218,59 @@ if not parquet_dirs:
 
 train_files, valid_files = split_files(parquet_dirs, valid_ratio=config["valid_ratio"])
 logger.info(f"Loading data from {len(train_files)} training files and {len(valid_files)} validation files")
-NUM_WORKER = int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count()-2))
-# NUM_WORKER = 0  # Set to 0 for debugging
-train_dataloader = create_dataloader(train_files, config["batch_size"], num_workers=NUM_WORKER)
-valid_dataloader = create_dataloader(valid_files, config["batch_size"], num_workers=NUM_WORKER)
+
+# Compute num_workers per rank
+total_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+if total_cpus is not None:
+    total_cpus = int(total_cpus)
+else:
+    # fallback: use all local CPUs
+    total_cpus = os.cpu_count() or 1
+
+if ddp:
+    # split CPUs across ranks
+    workers_per_rank = max(1, total_cpus // ddp_world_size)
+else:
+    # single process can use more workers; leave a couple CPUs free
+    workers_per_rank = max(1, total_cpus - 2)
+
+# workers_per_rank = 0  # Set to 0 for debugging
+
+train_dataloader = create_dataloader(
+    train_files,
+    config["batch_size"],
+    num_workers=workers_per_rank,
+    ddp_world_size=ddp_world_size,
+    ddp_rank=ddp_rank,
+    seed=config["seed"]
+)
+train_dataset = train_dataloader.dataset
+local_train_samples = train_dataset.local_len()  # Num of samples this rank could see
+local_train_batches = local_train_samples // config["batch_size"]  # Drop-last style
+if ddp:
+    local_train_batches = torch.tensor(local_train_batches, device=device, dtype=torch.long)
+    dist.all_reduce(local_train_batches, op=dist.ReduceOp.MIN)
+    train_batches_per_epoch = local_train_batches.item()
+else:
+    train_batches_per_epoch = local_train_batches
+
+valid_dataloader = create_dataloader(
+    valid_files,
+    config["batch_size"],
+    num_workers=workers_per_rank,
+    ddp_world_size=ddp_world_size,
+    ddp_rank=ddp_rank,
+    seed=config["seed"]
+)
+valid_dataset = valid_dataloader.dataset
+local_valid_samples = valid_dataset.local_len()
+local_valid_batches = local_valid_samples // config["batch_size"]
+if ddp:
+    local_valid_batches = torch.tensor(local_valid_batches, device=device, dtype=torch.long)
+    dist.all_reduce(local_valid_batches, op=dist.ReduceOp.MIN)
+    valid_batches_per_epoch = local_valid_batches.item()
+else:
+    valid_batches_per_epoch = local_valid_batches
 
 # ------------------------ Model Architecture & Training Setup ------------------------
 logger.info(f"Using device: {device}")
@@ -192,16 +280,20 @@ model = MethylGPTModel(
 )
 model.to(device)
 
+if ddp:
+    model = DDP(model, device_ids=[ddp_local_rank])
+raw_model = model.module if ddp else model  # the "raw" unwrapped model
+
 if config["pretrained_file"] is not None:
     try:
-        model.load_state_dict(torch.load(config["pretrained_file"], map_location=device))
+        raw_model.load_state_dict(torch.load(config["pretrained_file"], map_location=device))
         logger.info(f"Loaded pretrained model from {config['pretrained_file']}")
     except FileNotFoundError:
         logger.error(f"Pretrained model file not found: {config['pretrained_file']}")
     except Exception as e:
         logger.error(f"Error loading pretrained model: {e}")
 
-optimizer = torch.optim.Adam(model.parameters(), lr=config["lr"], weight_decay=0.0)
+optimizer = torch.optim.Adam(raw_model.parameters(), lr=config["lr"], weight_decay=0.0)
 lr_scheduler = torch.optim.lr_scheduler.StepLR(
     optimizer, step_size=1, gamma=config["schedule_ratio"]
 )  # step_size=1 if called every epoch
@@ -209,7 +301,8 @@ lr_scheduler = torch.optim.lr_scheduler.StepLR(
 # Load latest checkpoint (with matching config hash and largest epoch) and resume training,
 # otherwise start from scratch
 ckpt_dir = Path('./checkpoints')
-ckpt_dir.mkdir(parents=True, exist_ok=True)
+if master_process:
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
 latest_ckpt_dir = None
 if ckpt_dir.exists():
     ckpt_files = list(ckpt_dir.glob(f'checkpoint_{config_hash}_*.pth'))
@@ -230,7 +323,7 @@ if latest_ckpt_dir is not None:
     try:
         ckpt = torch.load(latest_ckpt_dir, map_location=device)
         start_epoch = ckpt['epoch'] + 1
-        model.load_state_dict(ckpt['model_state_dict'])
+        raw_model.load_state_dict(ckpt['model_state_dict'])
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         if 'scheduler_state_dict' in ckpt:
             lr_scheduler.load_state_dict(ckpt['scheduler_state_dict'])
@@ -241,9 +334,10 @@ if latest_ckpt_dir is not None:
 else:
     logger.info("No checkpoint found. Starting from scratch.")
 
-# A specific checkpoint dir for this run
-current_run_ckpt_dir = save_dir / "checkpoints"
-current_run_ckpt_dir.mkdir(parents=True, exist_ok=True)
+if master_process:
+    # A specific checkpoint dir for this run
+    current_run_ckpt_dir = save_dir / "checkpoints"
+    current_run_ckpt_dir.mkdir(parents=True, exist_ok=True)
 
 # ------------------------ Training Loop ------------------------
 best_val_loss = float("inf")
@@ -261,8 +355,19 @@ for epoch in range(start_epoch, config["epochs"] + 1):
     total_train_gepc = 0
     processed_train_samples = 0  # Count samples for average loss
 
-    pbar_train = tqdm(train_dataloader, desc=f"Training Epoch {epoch}", leave=False)
+    train_dataset.epoch = epoch  # update file order per rank per epoch
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=config["batch_size"],
+        num_workers=workers_per_rank,
+        pin_memory=True,
+        prefetch_factor=2 if workers_per_rank > 0 else None,
+    )
+
+    pbar_train = tqdm(train_dataloader, desc=f"Training Epoch {epoch}", leave=False) if master_process else train_dataloader
     for i, batch in enumerate(pbar_train):
+        if i >= train_batches_per_epoch:
+            break
         optimizer.zero_grad()
 
         # batch: {'id': list of bs samples ids, 'data': tensor of shape [bs, num_CpG_sites]}
@@ -301,45 +406,49 @@ for epoch in range(start_epoch, config["epochs"] + 1):
                 loss_gepc = torch.tensor(0.0).to(device) # So it can be added to total
 
         loss.backward()
-        # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # Example clipping
+        # torch.nn.utils.clip_grad_norm_(raw_model.parameters(), 1.0) # Example clipping
         optimizer.step()
 
         bs = input_gene_ids.size(0)
-        total_train_loss += loss.item() * bs
-        total_train_mse += loss_mse.item() * bs
+        total_train_loss += loss.detach() * bs
+        total_train_mse += loss_mse.detach() * bs
         if config["GEPC"]:
-            total_train_gepc += loss_gepc.item() * bs
+            total_train_gepc += loss_gepc.detach() * bs
         processed_train_samples += bs
 
-        if i % config["log_batch_interval"] == 0:
+        if master_process and i % config["log_batch_interval"] == 0:
             current_lr = optimizer.param_groups[0]['lr']
-            avg_loss_so_far = total_train_loss / processed_train_samples if processed_train_samples > 0 else 0
-            pbar_train.set_postfix_str(f"Batch Loss: {loss.item():.4f}, Avg Loss: {avg_loss_so_far:.4f}, LR: {current_lr:.2e}")
+            avg_loss_so_far = total_train_loss / processed_train_samples
+            pbar_train.set_postfix_str(f"Batch Loss: {loss.item():.4f}, Avg Loss: {avg_loss_so_far.item():.4f}, LR: {current_lr:.2e}")
             if wandb and wandb.run:
                 log_dict = {
                     "train_loss_batch": loss.item(),
                     "train_mse_batch": loss_mse.item(),
                     "learning_rate": current_lr,
-                    "epoch_progress": epoch + i / len(train_dataloader)
+                    "epoch_progress": epoch + i / train_batches_per_epoch
                 }
                 if config["GEPC"]:
                     log_dict["train_gepc_batch"] = loss_gepc.item()
                 # Global step to align with actual training progress (especially after resuming from checkpoints)
-                wandb.log(log_dict, step=epoch * len(train_dataloader) + i)
+                wandb.log(log_dict, step=epoch * train_batches_per_epoch + i)
 
-    avg_train_loss = total_train_loss / processed_train_samples if processed_train_samples > 0 else 0
-    avg_train_mse = total_train_mse / processed_train_samples if processed_train_samples > 0 else 0
-    avg_train_gepc = total_train_gepc / processed_train_samples if processed_train_samples > 0 else 0
+    avg_train_loss = total_train_loss / processed_train_samples
+    avg_train_mse = total_train_mse / processed_train_samples
+    avg_train_gepc = total_train_gepc / processed_train_samples
+    if ddp:
+        dist.all_reduce(avg_train_loss, op=dist.ReduceOp.AVG)
+        dist.all_reduce(avg_train_mse, op=dist.ReduceOp.AVG)
+        dist.all_reduce(avg_train_gepc, op=dist.ReduceOp.AVG)
 
-    train_logger.info(f"Epoch {epoch} | Avg Train Loss: {avg_train_loss:.4f} | Avg Train MSE: {avg_train_mse:.4f} | Avg Train GEPC: {avg_train_gepc:.4f}")
+    train_logger.info(f"Epoch {epoch} | Avg Train Loss: {avg_train_loss.item():.4f} | Avg Train MSE: {avg_train_mse.item():.4f} | Avg Train GEPC: {avg_train_gepc.item():.4f}")
     if wandb and wandb.run:
         log_dict_epoch = {
-            "avg_train_loss_epoch": avg_train_loss,
-            "avg_train_mse_epoch": avg_train_mse,
+            "avg_train_loss_epoch": avg_train_loss.item(),
+            "avg_train_mse_epoch": avg_train_mse.item(),
             "epoch": epoch
         }
         if config["GEPC"]:
-            log_dict_epoch["avg_train_gepc_epoch"] = avg_train_gepc
+            log_dict_epoch["avg_train_gepc_epoch"] = avg_train_gepc.item()
         wandb.log(log_dict_epoch)
 
     # --------------- Evaluation Phase ---------------
@@ -349,9 +458,20 @@ for epoch in range(start_epoch, config["epochs"] + 1):
     total_valid_gepc = 0
     processed_valid_samples = 0
 
-    pbar_valid = tqdm(valid_dataloader, desc=f"Validating Epoch {epoch}", leave=False)
+    valid_dataset.epoch = epoch
+    valid_dataloader = DataLoader(
+        valid_dataset,
+        batch_size=config["batch_size"],
+        num_workers=workers_per_rank,
+        pin_memory=True,
+        prefetch_factor=2 if workers_per_rank > 0 else None,
+    )
+
+    pbar_valid = tqdm(valid_dataloader, desc=f"Validating Epoch {epoch}", leave=False) if master_process else valid_dataloader
     with torch.no_grad():
-        for batch in pbar_valid:
+        for i, batch in enumerate(pbar_valid):
+            if i >= valid_batches_per_epoch:
+                break
             prepared_batch_valid = model.prepare_data(batch)
 
             input_gene_ids_valid = prepared_batch_valid["gene_ids"].to(device)
@@ -380,37 +500,41 @@ for epoch in range(start_epoch, config["epochs"] + 1):
                     loss_gepc_valid = torch.tensor(0.0).to(device)
 
             bs_valid = input_gene_ids_valid.size(0)
-            total_valid_loss += loss_valid.item() * bs_valid
-            total_valid_mse += loss_mse_valid.item() * bs_valid
+            total_valid_loss += loss_valid.detach() * bs_valid
+            total_valid_mse += loss_mse_valid.detach() * bs_valid
             if config["GEPC"]:
-                total_valid_gepc += loss_gepc_valid.item() * bs_valid
+                total_valid_gepc += loss_gepc_valid.detach() * bs_valid
             processed_valid_samples += bs_valid
 
-    avg_valid_loss = total_valid_loss / processed_valid_samples if processed_valid_samples > 0 else 0
-    avg_valid_mse = total_valid_mse / processed_valid_samples if processed_valid_samples > 0 else 0
-    avg_valid_gepc = total_valid_gepc / processed_valid_samples if processed_valid_samples > 0 else 0
+    avg_valid_loss = total_valid_loss / processed_valid_samples
+    avg_valid_mse = total_valid_mse / processed_valid_samples
+    avg_valid_gepc = total_valid_gepc / processed_valid_samples
+    if ddp:
+        dist.all_reduce(avg_valid_loss, op=dist.ReduceOp.AVG)
+        dist.all_reduce(avg_valid_mse, op=dist.ReduceOp.AVG)
+        dist.all_reduce(avg_valid_gepc, op=dist.ReduceOp.AVG)
 
-    test_logger.info(f"Epoch {epoch} | Avg Valid Loss: {avg_valid_loss:.4f} | Avg Valid MSE: {avg_valid_mse:.4f} | Avg Valid GEPC: {avg_valid_gepc:.4f}")
+    test_logger.info(f"Epoch {epoch} | Avg Valid Loss: {avg_valid_loss.item():.4f} | Avg Valid MSE: {avg_valid_mse.item():.4f} | Avg Valid GEPC: {avg_valid_gepc.item():.4f}")
     if wandb and wandb.run:
         log_dict_epoch_val = {
-            "avg_valid_loss_epoch": avg_valid_loss,
-            "avg_valid_mse_epoch": avg_valid_mse,
+            "avg_valid_loss_epoch": avg_valid_loss.item(),
+            "avg_valid_mse_epoch": avg_valid_mse.item(),
             "epoch": epoch
         }
         if config["GEPC"]:
-            log_dict_epoch_val["avg_valid_gepc_epoch"] = avg_valid_gepc
+            log_dict_epoch_val["avg_valid_gepc_epoch"] = avg_valid_gepc.item()
         wandb.log(log_dict_epoch_val)
 
     # Lr sheduled at each epoch end
     lr_scheduler.step()
 
     # --------------- Checkpointing ---------------
-    if epoch % config["save_epoch_interval"] == 0 or epoch == config["epochs"]:
+    if master_process and (epoch % config["save_epoch_interval"] == 0 or epoch == config["epochs"]):
         ckpt_epoch_dir = current_run_ckpt_dir / f"checkpoint_{config_hash}_{epoch}.pth"
         try:
             torch.save({
                 'epoch': epoch,
-                'model_state_dict': model.state_dict(),
+                'model_state_dict': raw_model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': lr_scheduler.state_dict() if lr_scheduler is not None else None,
             }, ckpt_epoch_dir)
@@ -422,14 +546,14 @@ for epoch in range(start_epoch, config["epochs"] + 1):
     # For now, we just log the best model based on validation loss
     if avg_valid_loss < best_val_loss:
         best_val_loss = avg_valid_loss
-        best_model_state = copy.deepcopy(model.state_dict())
+        best_model_state = copy.deepcopy(raw_model.state_dict())
         best_model_epoch = epoch
         logger.info(f"New best model found at epoch {epoch} with validation loss: {best_val_loss:.4f}")
 
 # ------------------------ Final Evaluation ------------------------
 # At the end of training, load the best model state if available
 if best_model_state is not None:
-    model.load_state_dict(best_model_state)
+    raw_model.load_state_dict(best_model_state)
     logger.info(f"Loaded best model from epoch {best_model_epoch} with validation loss: {best_val_loss:.4f}")
 else:
     logger.warning("No best model found (best_model_state is None). Training may not have completed successfully.")
@@ -443,9 +567,20 @@ total_final_valid_mse = 0
 total_final_valid_gepc = 0
 processed_final_valid_samples = 0
 
-pbar_final_valid = tqdm(valid_dataloader, desc="Final Validation", leave=False)
+valid_dataset.epoch = 0
+valid_dataloader = DataLoader(
+    valid_dataset,
+    batch_size=config["batch_size"],
+    num_workers=workers_per_rank,
+    pin_memory=True,
+    prefetch_factor=2 if workers_per_rank > 0 else None,
+)
+
+pbar_final_valid = tqdm(valid_dataloader, desc="Final Validation", leave=False) if master_process else valid_dataloader
 with torch.no_grad():
-    for batch in pbar_final_valid:
+    for i, batch in enumerate(pbar_final_valid):
+        if i >= valid_batches_per_epoch:
+            break
         prepared_batch_final = model.prepare_data(batch)
 
         input_gene_ids_final = prepared_batch_final["gene_ids"].to(device)
@@ -474,17 +609,24 @@ with torch.no_grad():
                 loss_gepc_final = torch.tensor(0.0).to(device)
 
         bs_final = input_gene_ids_final.size(0)
-        total_final_valid_loss += loss_final.item() * bs_final
-        total_final_valid_mse += loss_mse_final.item() * bs_final
+        total_final_valid_loss += loss_final.detach() * bs_final
+        total_final_valid_mse += loss_mse_final.detach() * bs_final
         if config["GEPC"]:
-            total_final_valid_gepc += loss_gepc_final.item() * bs_final
+            total_final_valid_gepc += loss_gepc_final.detach() * bs_final
         processed_final_valid_samples += bs_final
 
 avg_final_valid_loss = total_final_valid_loss / processed_final_valid_samples if processed_final_valid_samples > 0 else 0
 avg_final_valid_mse = total_final_valid_mse / processed_final_valid_samples if processed_final_valid_samples > 0 else 0
 avg_final_valid_gepc = total_final_valid_gepc / processed_final_valid_samples if processed_final_valid_samples > 0 else 0
+if ddp:
+    dist.all_reduce(avg_final_valid_loss, op=dist.ReduceOp.AVG)
+    dist.all_reduce(avg_final_valid_mse, op=dist.ReduceOp.AVG)
+    dist.all_reduce(avg_final_valid_gepc, op=dist.ReduceOp.AVG)
 
-logger.info(f"Final Validation | Avg Loss: {avg_final_valid_loss:.4f} | Avg MSE: {avg_final_valid_mse:.4f} | Avg GEPC: {avg_final_valid_gepc:.4f}")
+logger.info(f"Final Validation | Avg Loss: {avg_final_valid_loss.item():.4f} | Avg MSE: {avg_final_valid_mse.item():.4f} | Avg GEPC: {avg_final_valid_gepc.item():.4f}")
 
-if wandb and wandb.run:
+if master_process and wandb and wandb.run:
     wandb.finish()
+
+if ddp:
+    destroy_process_group()
