@@ -280,6 +280,11 @@ model = MethylGPTModel(
 )
 model.to(device)
 
+num_trainable_params = sum(
+    p.numel() for p in model.parameters() if p.requires_grad
+)
+logger.info(f"Number of trainable parameters: {num_trainable_params:,}")
+
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 raw_model = model.module if ddp else model  # the "raw" unwrapped model
