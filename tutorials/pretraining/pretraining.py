@@ -369,11 +369,16 @@ for epoch in range(start_epoch, config["epochs"] + 1):
         prefetch_factor=2 if workers_per_rank > 0 else None,
     )
 
-    pbar_train = tqdm(train_dataloader, desc=f"Training Epoch {epoch}", leave=False) if master_process else train_dataloader
+    pbar_train = tqdm(
+        train_dataloader, desc=f"Training Epoch {epoch}", leave=False, total=train_batches_per_epoch
+    ) if master_process else train_dataloader
     for i, batch in enumerate(pbar_train):
         if i >= train_batches_per_epoch:
             break
         optimizer.zero_grad()
+        import code;
+
+        code.interact(local=locals())
 
         # batch: {'id': list of bs samples ids, 'data': tensor of shape [bs, num_CpG_sites]}
         prepared_batch = model.prepare_data(batch)
@@ -472,7 +477,9 @@ for epoch in range(start_epoch, config["epochs"] + 1):
         prefetch_factor=2 if workers_per_rank > 0 else None,
     )
 
-    pbar_valid = tqdm(valid_dataloader, desc=f"Validating Epoch {epoch}", leave=False) if master_process else valid_dataloader
+    pbar_valid = tqdm(
+        valid_dataloader, desc=f"Validating Epoch {epoch}", leave=False, total=valid_batches_per_epoch
+    ) if master_process else valid_dataloader
     with torch.no_grad():
         for i, batch in enumerate(pbar_valid):
             if i >= valid_batches_per_epoch:
@@ -581,7 +588,9 @@ valid_dataloader = DataLoader(
     prefetch_factor=2 if workers_per_rank > 0 else None,
 )
 
-pbar_final_valid = tqdm(valid_dataloader, desc="Final Validation", leave=False) if master_process else valid_dataloader
+pbar_final_valid = tqdm(
+    valid_dataloader, desc="Final Validation", leave=False, total=valid_batches_per_epoch
+) if master_process else valid_dataloader
 with torch.no_grad():
     for i, batch in enumerate(pbar_final_valid):
         if i >= valid_batches_per_epoch:
