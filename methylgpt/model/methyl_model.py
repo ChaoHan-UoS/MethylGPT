@@ -33,6 +33,7 @@ class MethylGPTModel(TransformerModel):
             vocab=vocab,
             dropout=config["dropout"],
             pad_token=vocab.pad_token,
+            do_cls=False,
             do_mvc=True,
             do_dab=False,
             use_batch_labels=False,

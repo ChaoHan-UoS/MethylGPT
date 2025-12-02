@@ -93,6 +93,7 @@ class TransformerModel(nn.Module):
         vocab: Any = None,
         dropout: float = 0.5,
         pad_token: str = "<pad>",
+        do_cls: bool = False,
         do_mvc: bool = False,
         do_dab: bool = False,
         use_batch_labels: bool = False,
@@ -169,8 +170,9 @@ class TransformerModel(nn.Module):
             explicit_zero_prob=explicit_zero_prob,
             use_batch_labels=use_batch_labels,
         )
-        # Classification task
-        self.cls_decoder = ClsDecoder(d_model, n_cls, nlayers=nlayers_cls)
+        if do_cls:
+            # Classification task
+            self.cls_decoder = ClsDecoder(d_model, n_cls, nlayers=nlayers_cls)
         if do_mvc:
             # Profile reconstruction task
             self.mvc_decoder = MVCDecoder(
