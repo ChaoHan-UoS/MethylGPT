@@ -82,8 +82,8 @@ parser.add_argument('--no_wandb', action='store_true', default=False,
                     help="Disable wandb logging")
 
 args = parser.parse_args()
-# LOG_WANDB = not args.no_wandb
-LOG_WANDB = False
+LOG_WANDB = not args.no_wandb
+# LOG_WANDB = False
 wandb = None
 
 # Load config from JSON file
