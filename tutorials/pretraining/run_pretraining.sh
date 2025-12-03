@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Data
-RUN_PREPROCESSING=true
+RUN_PREPROCESSING=false
 RAW_DATA_DIR="data_examples/raw_data"                  # Dir with raw CSV/CSV.gz files
 PROBE_ID_REF="data_examples/probe_ids_type3.csv"            #  Probe ID ref for preprocessing & vocab
 PREPROCESSED_PARQUET_DIR="data_examples/parquet_files"            # Parquet files
@@ -47,12 +47,19 @@ fi
 echo ""
 echo "--- Starting Training Step ---"
 
-python "${TRAIN_SCRIPT}" \
+#python "${TRAIN_SCRIPT}" \
+#    --config_file "${CONFIG_FILE}" \
+#    --probe_id_path "${PROBE_ID_REF}" \
+#    --parquet_data_dir "${PREPROCESSED_PARQUET_DIR}" \
+#    --qced_metadata_path "${PREPROCESSED_METADATA_PATH}" \
+#    "$@"           # additional args of the TRAIN_SCRIPT passed when invoking this bash script
+
+torchrun --standalone --nproc_per_node=2 "${TRAIN_SCRIPT}" \
     --config_file "${CONFIG_FILE}" \
     --probe_id_path "${PROBE_ID_REF}" \
     --parquet_data_dir "${PREPROCESSED_PARQUET_DIR}" \
     --qced_metadata_path "${PREPROCESSED_METADATA_PATH}" \
-    "$@"           # additional args of the TRAIN_SCRIPT passed when invoking this bash script
+    "$@"
 
 if [ $? -ne 0 ]; then
     echo "Training script exited with an error."
