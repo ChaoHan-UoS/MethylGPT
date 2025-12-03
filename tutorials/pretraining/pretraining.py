@@ -68,15 +68,13 @@ torch.set_float32_matmul_precision('high')
 
 # ------------------------ Config & Setup ------------------------
 parser = argparse.ArgumentParser()
-parser.add_argument("-config_file", "--config_file", default="config_example.json",
+parser.add_argument("--config_file", default="config_ex.json",
                     help="Path to the config file")
-parser.add_argument("-savename", "--savename", default="pretrain_run",
-                    help="Name for saving outputs")
-parser.add_argument("-probe_id_path", "--probe_id_path", default="probe_ids_type3.csv",
+parser.add_argument("--probe_id_path", default="data_examples/probe_ids_type3.csv",
                     help="Path to probe IDs CSV file for VOCABULARY creation")
-parser.add_argument("-parquet_data_dir", "--parquet_data_dir", default="parquet_files",
+parser.add_argument("--parquet_data_dir", default="data_examples/parquet_files",
                     help="Path to PREPROCESSED parquet data directory for TRAINING")
-parser.add_argument("-metadata_file", "--metadata_file", default="QCed_samples_type3.csv",
+parser.add_argument("--qced_metadata_path", default="data_examples/QCed_samples_type3.csv",
                     help="Path to the PREPROCESSED QCed_samples_type3.csv metadata file for TRAINING")
 parser.add_argument('--no_wandb', action='store_true', default=False,
                     help="Disable wandb logging")
@@ -113,20 +111,26 @@ if master_process and config_from_file.get("do_train", True):
         print(f"Error initializing wanb: {e}")
         wandb = None
 
+# Dir for saving vocab, logs, config and checkpoints of this run
+save_dir = Path(f"save/pretrain-{time.strftime('%Y%m%d-%H%M%S')}/")
+
 # Creates a vocab mapping CpG probe IDs to unique integer indices for model input
 probe_id_path = Path(args.probe_id_path)
 pad_token = config_from_file.get("pad_token", "<pad>")
 special_tokens = config_from_file.get("special_tokens", ["<pad>", "<cls>", "<eoc>"])
 methyl_vocab = MethylVocab(
-    probe_id_path, pad_token, special_tokens, save_dir=None
-)  # Pass None for save_dir initially
+    probe_id_path, pad_token, special_tokens, save_dir=save_dir
+)
 
 config = dict(
     # Important thing to control
+    device=device,
     seed=config_from_file.get("seed", 42),
-    parquet_dir=Path(args.parquet_data_dir),                # USE PREPROCESSED PARQUET DIR
-    probe_id_dir=probe_id_path,                             # This is for vocab, uses the original probe_id_path arg
-    data_dir=Path(args.metadata_file),                      # USE PREPROCESSED METADATA FILE
+    save_dir=save_dir,
+    probe_id_path=probe_id_path,                             # This is for vocab, uses the original probe_id_path arg
+    parquet_data_dir=Path(args.parquet_data_dir),                # USE PREPROCESSED PARQUET DIR
+    qced_metadata_path=Path(args.qced_metadata_path),                      # USE PREPROCESSED METADATA FILE
+
     valid_ratio=config_from_file.get("valid_ratio", 0.1),
     max_fi=config_from_file.get("max_fi", 500000),          # To use full dataset, Just set >500000
     do_train=config_from_file.get("do_train", True),
@@ -159,10 +163,6 @@ config = dict(
     per_seq_batch_sample=config_from_file.get("per_seq_batch_sample", False),  # Flag for per-sequence batch sampling
 )
 
-# Update the main config with command-line arguments and W&B run ID if available
-config["device"] = device
-config["savename"] = args.savename
-config["metadata_file"] = args.metadata_file
 if wandb and wandb.run:
     config["wandb_run_id"] = wandb.run.id
     wandb.config.update(config, allow_val_change=True) # Log the final combined config to W&B
@@ -170,9 +170,6 @@ if wandb and wandb.run:
 config_hash = make_hash(config)
 set_seed(config["seed"])
 
-# Dir for saving logs, config, vocab and checkpoints of this run
-# save_dir = Path(f"save/dev_{config['savename']}-{time.strftime('%b%d-%H-%M')}/")
-save_dir = Path(f"save/dev_{config['savename']}/")
 if master_process:
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -186,12 +183,8 @@ if master_process:
     save_config(config, save_dir)
     logger.info(f"Config saved to {save_dir}")
 
-    methyl_vocab.save_dir = save_dir
-    if not (save_dir / "vocab.json").exists():
-        methyl_vocab._save_vocab()
-        logger.info(f"MethylVocab saved to {save_dir}")
-    else:
-        logger.info(f"MethylVocab already exists at {save_dir} or will be loaded from there.")
+    methyl_vocab._save_vocab()
+    logger.info(f"MethylVocab saved to {save_dir}")
 else:
     # dummy loggers that do nothing
     logger = logging.getLogger("dummy_logger")
@@ -199,8 +192,6 @@ else:
     test_logger = logging.getLogger("dummy_test_logger")
     for lg in (logger, train_logger, test_logger):
         lg.addHandler(logging.NullHandler())
-
-    methyl_vocab.save_dir = save_dir  # so paths are consistent
 
 # ------------------------ Data Preparation ------------------------
 parquet_dirs = []
@@ -306,8 +297,6 @@ lr_scheduler = torch.optim.lr_scheduler.StepLR(
 # Load latest checkpoint (with matching config hash and largest epoch) and resume training,
 # otherwise start from scratch
 ckpt_dir = Path('./checkpoints')
-if master_process:
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
 latest_ckpt_dir = None
 if ckpt_dir.exists():
     ckpt_files = list(ckpt_dir.glob(f'checkpoint_{config_hash}_*.pth'))

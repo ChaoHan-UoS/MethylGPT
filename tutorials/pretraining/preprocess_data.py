@@ -17,20 +17,21 @@ CELL_CHUNK_SIZE = 20
 def process_to_cell_chunked_parquet(
         input_raw_csv_dir_str: str,
         probe_id_ref_path_str: str,
-        output_metadata_dir_str: str,
-        output_parquet_base_dir_str: str
+        output_parquet_dir_str: str,
+        output_metadata_path_str: str
+
 ):
     input_raw_csv_dir = Path(input_raw_csv_dir_str)
     probe_id_ref_path = Path(probe_id_ref_path_str)
-    output_metadata_dir = Path(output_metadata_dir_str)
-    output_parquet_dir = Path(output_parquet_base_dir_str) / "parquet_files"
+    output_parquet_dir = Path(output_parquet_dir_str)
+    output_metadata_path = Path(output_metadata_path_str)
 
-    output_metadata_dir.mkdir(parents=True, exist_ok=True)
     output_parquet_dir.mkdir(parents=True, exist_ok=True)
+    output_metadata_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"Input raw CSV directory: {input_raw_csv_dir}")
     print(f"Reference probe ID CSV: {probe_id_ref_path}")
-    print(f"Output metadata directory: {output_metadata_dir}")
+    print(f"Output metadata CSV: {output_metadata_path}")
     print(f"Output Parquet directory (for cell chunks): {output_parquet_dir}")
 
     try:
@@ -117,9 +118,8 @@ def process_to_cell_chunked_parquet(
 
     if final_parquet_chunk_metadata:
         metadata_df = pd.DataFrame(final_parquet_chunk_metadata)
-        qced_output_path = output_metadata_dir / "QCed_samples_type3.csv"
-        metadata_df.to_csv(qced_output_path, index=False)
-        print(f"Metadata written to: {qced_output_path}")
+        metadata_df.to_csv(output_metadata_path, index=False)
+        print(f"Metadata written to: {output_metadata_path}")
     else:
         print("No chunks saved. Skipping metadata.")
 
@@ -132,16 +132,16 @@ if __name__ == "__main__":
                         help="Directory with raw CSV or CSV.gz files.")
     parser.add_argument("--probe_id_ref_path", type=str, default="probe_ids_type3.csv",
                         help="Reference CSV with 'illumina_probe_id' column.")
-    parser.add_argument("--output_metadata_dir", type=str, default=".",
-                        help="Directory for output metadata CSV.")
-    parser.add_argument("--output_parquet_base_dir", type=str, default=".",
-                        help="Base directory for parquet_files/")
+    parser.add_argument("--output_parquet_dir", type=str, default="data_examples/parquet_files",
+                        help="Directory for QCed parquet files")
+    parser.add_argument("--output_metadata_path", type=str, default="data_examples/QCed_samples_type3.csv",
+                        help="Path to QCed metadata CSV.")
 
     args = parser.parse_args()
 
     process_to_cell_chunked_parquet(
         args.input_raw_csv_dir,
         args.probe_id_ref_path,
-        args.output_metadata_dir,
-        args.output_parquet_base_dir
+        args.output_parquet_dir,
+        args.output_metadata_path
     )

@@ -3,7 +3,7 @@ data/*
 save/*
 methylgpt_env/*
 
-tutorials/pretraining/data_example/*
+tutorials/pretraining/data_examples/*
 tutorials/pretraining/save/*
 
 # But do not ignore the directory itself
