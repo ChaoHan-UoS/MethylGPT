@@ -132,7 +132,7 @@ if __name__ == "__main__":
                         help="Directory with raw CSV or CSV.gz files.")
     parser.add_argument("--probe_id_ref_path", type=str, default="probe_ids_type3.csv",
                         help="Reference CSV with 'illumina_probe_id' column.")
-    parser.add_argument("--output_parquet_dir", type=str, default="data_examples/parquet_files",
+    parser.add_argument("--output_parquet_dir", type=str, default="data_examples/parquet_data",
                         help="Directory for QCed parquet files")
     parser.add_argument("--output_metadata_path", type=str, default="data_examples/QCed_samples_type3.csv",
                         help="Path to QCed metadata CSV.")

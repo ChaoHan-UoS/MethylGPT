@@ -1,15 +1,27 @@
 #!/bin/bash
 
 # Data
+# Example data
 RUN_PREPROCESSING=false
-RAW_DATA_DIR="data_examples/raw_data"                  # Dir with raw CSV/CSV.gz files
-PROBE_ID_REF="data_examples/probe_ids_type3.csv"            #  Probe ID ref for preprocessing & vocab
-PREPROCESSED_PARQUET_DIR="data_examples/parquet_files"            # Parquet files
-PREPROCESSED_METADATA_PATH="data_examples/QCed_samples_type3.csv"  # Metadata file after QC
+#RAW_DATA_DIR="data_examples/raw_data"                  # Dir with raw CSV/CSV.gz files
+#PROBE_ID_REF="data_examples/probe_ids_type3.csv"            #  Probe ID ref for preprocessing & vocab
+##PREPROCESSED_PARQUET_DIR="data_examples/parquet_data"            # Parquet files
+#PREPROCESSED_METADATA_PATH="data_examples/QCed_samples_type3.csv"  # Metadata file after QC
 
 # Config and script files
-CONFIG_FILE="config_ex.json"
-PREPROCESS_SCRIPT="preprocess_data.py"
+#CONFIG_FILE="config_ex.json"
+#PREPROCESS_SCRIPT="preprocess_data.py"
+#TRAIN_SCRIPT="pretraining.py"
+
+# Full pretraining data
+RUN_PREPROCESSING=false
+RAW_DATA_DIR=""
+PROBE_ID_REF="data/probe_ids_type3.csv"
+PREPROCESSED_PARQUET_DIR="data/processed_type3_parquet_shuffled"
+PREPROCESSED_METADATA_PATH=""
+
+CONFIG_FILE="config.json"
+PREPROCESS_SCRIPT=""
 TRAIN_SCRIPT="pretraining.py"
 
 echo "--- Configuration ---"
