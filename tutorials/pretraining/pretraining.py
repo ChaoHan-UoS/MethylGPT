@@ -128,7 +128,7 @@ config = dict(
     seed=config_from_file.get("seed", 42),
     save_dir=save_dir,
     probe_id_path=probe_id_path,                             # This is for vocab, uses the original probe_id_path arg
-    parquet_data_dir=Path(args.parquet_data_dir),                # USE PREPROCESSED PARQUET DIR
+    parquet_dir=Path(args.parquet_data_dir),                # USE PREPROCESSED PARQUET DIR
     qced_metadata_path=Path(args.qced_metadata_path),                      # USE PREPROCESSED METADATA FILE
 
     valid_ratio=config_from_file.get("valid_ratio", 0.1),
