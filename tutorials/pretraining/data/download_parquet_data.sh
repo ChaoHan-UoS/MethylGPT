@@ -6,7 +6,7 @@ DEST_DIR="data/processed_type3_parquet_shuffled"
 mkdir -p "$DEST_DIR"
 
 TAR_PATH="$DEST_DIR/processed_type3_parquet_shuffled.tar.gz"
-DROPBOX_URL="https://uc3f5fa96fd1b2c01a916c66dba2.dl.dropboxusercontent.com/cd/0/get/C2WOKQ7F9xhwLe0xfL6Plt53ZRbuIe9FWyp8XEyrLNfUCqR9xq7zNY0mxs8iqul9jq1nRAVA2L_9PyyQwJsnkkVsf6J4g97FjHbomNUKrDvwN0SauuWoAkJb9ZqFlZYLZKh_dQkOPhxKQTHaZVp-q-qJ8VYJkW5gB5k_hFSkinOjEA/file?_download_id=32764388564660274110998624726781978777689027179389912730641765422&_log_download_success=1&_notify_domain=www.dropbox.com&dl=1"
+DROPBOX_URL="https://www.dropbox.com/scl/fi/bbs6sxlkpbx11rhyvdfto/processed_type3_parquet_shuffled.tar.gz?rlkey=s73utmumq6xldmv3y6kh9bz75&e=3&st=8pslwy2a&dl=1"
 
 # Download tar.gz
 wget -O "$TAR_PATH" "$DROPBOX_URL"
