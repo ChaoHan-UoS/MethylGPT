@@ -244,6 +244,7 @@ if ddp:
     train_batches_per_epoch = local_train_batches.item()
 else:
     train_batches_per_epoch = local_train_batches
+logger.info(f"Number of training batches per epoch {train_batches_per_epoch}")
 
 valid_dataloader = create_dataloader(
     valid_files,
@@ -262,6 +263,7 @@ if ddp:
     valid_batches_per_epoch = local_valid_batches.item()
 else:
     valid_batches_per_epoch = local_valid_batches
+logger.info(f"Number of validation batches per epoch {valid_batches_per_epoch}")
 
 # ------------------------ Model Architecture & Training Setup ------------------------
 logger.info(f"Using device: {device}")
