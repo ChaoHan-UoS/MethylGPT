@@ -365,7 +365,7 @@ for epoch in range(start_epoch, config["epochs"] + 1):
         if i >= train_batches_per_epoch:
             break
         optimizer.zero_grad()
-        # import code; code.interact(local=locals())
+        import code; code.interact(local=locals())
 
         # batch: {'id': list of bs samples ids, 'data': tensor of shape [bs, num_CpG_sites]}
         prepared_batch = raw_model.prepare_data(batch)
