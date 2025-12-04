@@ -10,7 +10,7 @@
     "epochs": 100,
     "ecs_thres": 0.0,
     "lr": 0.001,
-    "batch_size": 128,
+    "batch_size": 64,
     "layer_size": 128,
     "nlayers": 6,
     "nhead": 4,
