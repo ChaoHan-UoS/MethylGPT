@@ -143,6 +143,7 @@ config = dict(
     epochs=config_from_file.get("epochs", 100),
     ecs_thres=config_from_file.get("ecs_thres", 0.0),  # Elastic cell similarity objective, 0.0 to 1.0, 0.0 to disable
     lr=config_from_file.get("lr", 1e-3),
+    grad_accum_steps = config_from_file.get("grad_accum_steps", 2),
     batch_size=config_from_file.get("batch_size", 32),  #4,
     layer_size=config_from_file.get("layer_size", 64),  #16,
     nlayers=config_from_file.get("nlayers", 6),         #4,
@@ -244,7 +245,11 @@ if ddp:
     train_batches_per_epoch = local_train_batches.item()
 else:
     train_batches_per_epoch = local_train_batches
-logger.info(f"Number of training batches per epoch {train_batches_per_epoch}")
+# drop remainder (micro) batches so each optimizer step sees exactly grad_accum_steps
+grad_accum_steps = config["grad_accum_steps"]
+train_batches_per_epoch = (train_batches_per_epoch // grad_accum_steps) * grad_accum_steps
+logger.info(f"Number of training batches (size {config['batch_size']}) per epoch {train_batches_per_epoch}")
+logger.info(f"Number of effective training batches (size {config['batch_size'] * grad_accum_steps}) per epoch {train_batches_per_epoch // grad_accum_steps}")
 
 valid_dataloader = create_dataloader(
     valid_files,
@@ -339,6 +344,7 @@ if master_process:
 best_val_loss = float("inf")
 best_model_state = None
 best_model_epoch = 0
+assert config["log_batch_interval"] % grad_accum_steps == 0, "log_batch_interval should be multiple of grad_accum_steps"
 
 logger.info(f"Starting training from epoch {start_epoch} to {config['epochs']}")
 for epoch in range(start_epoch, config["epochs"] + 1):
@@ -350,6 +356,10 @@ for epoch in range(start_epoch, config["epochs"] + 1):
     total_train_mse = 0
     total_train_gepc = 0
     processed_train_samples = 0  # Count samples for average loss
+    loss_pos_num_accum = 0
+    loss_accum = 0.0
+    loss_mse_accum = 0.0
+    loss_gepc_accum = 0.0
 
     train_dataset.epoch = epoch  # update file order per rank per epoch
     train_dataloader = DataLoader(
@@ -366,7 +376,12 @@ for epoch in range(start_epoch, config["epochs"] + 1):
     for i, batch in enumerate(pbar_train):
         if i >= train_batches_per_epoch:
             break
-        optimizer.zero_grad()
+        if i % grad_accum_steps == 0:
+            optimizer.zero_grad()
+            loss_pos_num_accum = 0
+            loss_accum = 0.0
+            loss_mse_accum = 0.0
+            loss_gepc_accum = 0.0
         # import code; code.interact(local=locals())
 
         # batch: {'id': list of bs samples ids, 'data': tensor of shape [bs, num_CpG_sites]}
@@ -383,6 +398,9 @@ for epoch in range(start_epoch, config["epochs"] + 1):
         # padding attention mask: boolean tensor [bs, num_CpG_sites + 1]
         batch_attn_mask = target_values.eq(config["pad_value"])
 
+        if ddp:
+            model.require_backward_grad_sync = (i % grad_accum_steps == grad_accum_steps - 1)
+
         with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
             output_dict = model(
                 input_gene_ids,
@@ -396,40 +414,46 @@ for epoch in range(start_epoch, config["epochs"] + 1):
             # Only compute MSE loss on masked positions
             loss_positions = input_values.eq(config["mask_value"])
             loss_mse = masked_mse_loss(output_dict["mlm_output"], target_values, loss_positions)
+            loss_mse = loss_mse / grad_accum_steps  # Normalize loss to account for gradient accumulation caused by successive backward()
             loss = loss_mse
 
             if config["GEPC"] and "mvc_output" in output_dict and output_dict["mvc_output"] is not None:
                 loss_gepc = masked_mse_loss(output_dict["mvc_output"], target_values, loss_positions)
+                loss_gepc = loss_gepc / grad_accum_steps
                 loss = loss + loss_gepc
             else:
                 loss_gepc = torch.tensor(0.0).to(device) # So it can be added to total
 
+        loss_pos_num_accum += loss_positions.sum().detach()
+        loss_accum += loss.detach()
+        loss_mse_accum += loss_mse.detach()
+        loss_gepc_accum += loss_gepc.detach()
         loss.backward()
-        # torch.nn.utils.clip_grad_norm_(raw_model.parameters(), 1.0) # Example clipping
-        optimizer.step()
+        if i % grad_accum_steps == grad_accum_steps - 1:
+            # torch.nn.utils.clip_grad_norm_(raw_model.parameters(), 1.0)  # Example clipping
+            optimizer.step()
 
-        bs = input_gene_ids.size(0)
-        total_train_loss += loss.detach() * bs
-        total_train_mse += loss_mse.detach() * bs
-        if config["GEPC"]:
-            total_train_gepc += loss_gepc.detach() * bs
-        processed_train_samples += bs
+            total_train_loss += loss_accum * loss_pos_num_accum * grad_accum_steps
+            total_train_mse += loss_mse_accum * loss_pos_num_accum * grad_accum_steps
+            if config["GEPC"]:
+                total_train_gepc += loss_gepc_accum * loss_pos_num_accum * grad_accum_steps
+            processed_train_samples += loss_pos_num_accum * grad_accum_steps
 
-        if master_process and i % config["log_batch_interval"] == 0:
-            current_lr = optimizer.param_groups[0]['lr']
-            avg_loss_so_far = total_train_loss / processed_train_samples
-            pbar_train.set_postfix_str(f"Batch Loss: {loss.item():.4f}, Avg Loss: {avg_loss_so_far.item():.4f}, LR: {current_lr:.2e}")
-            if wandb and wandb.run:
-                log_dict = {
-                    "train_loss_batch": loss.item(),
-                    "train_mse_batch": loss_mse.item(),
-                    "learning_rate": current_lr,
-                    "epoch_progress": epoch + i / train_batches_per_epoch
-                }
-                if config["GEPC"]:
-                    log_dict["train_gepc_batch"] = loss_gepc.item()
-                # Global step to align with actual training progress (especially after resuming from checkpoints)
-                wandb.log(log_dict, step=epoch * train_batches_per_epoch + i)
+            if master_process and (i + 1) % config["log_batch_interval"] == 0:
+                current_lr = optimizer.param_groups[0]['lr']
+                avg_loss_so_far = total_train_loss / processed_train_samples
+                pbar_train.set_postfix_str(f"Batch Loss: {loss_accum.item():.4f}, Avg Loss: {avg_loss_so_far.item():.4f}, LR: {current_lr:.2e}")
+                if wandb and wandb.run:
+                    log_dict = {
+                        "train_loss_batch": loss_accum.item(),
+                        "train_mse_batch": loss_mse_accum.item(),
+                        "learning_rate": current_lr,
+                        "epoch_progress": epoch + (i + 1) / train_batches_per_epoch
+                    }
+                    if config["GEPC"]:
+                        log_dict["train_gepc_batch"] = loss_gepc_accum.item()
+                    # Global step to align with actual training progress (especially after resuming from checkpoints)
+                    wandb.log(log_dict, step=epoch * train_batches_per_epoch + i + 1)
 
     avg_train_loss = total_train_loss / processed_train_samples
     avg_train_mse = total_train_mse / processed_train_samples
@@ -500,12 +524,12 @@ for epoch in range(start_epoch, config["epochs"] + 1):
                 else:
                     loss_gepc_valid = torch.tensor(0.0).to(device)
 
-            bs_valid = input_gene_ids_valid.size(0)
-            total_valid_loss += loss_valid.detach() * bs_valid
-            total_valid_mse += loss_mse_valid.detach() * bs_valid
+            loss_pos_num_valid = loss_positions_valid.sum().detach()
+            total_valid_loss += loss_valid.detach() * loss_pos_num_valid
+            total_valid_mse += loss_mse_valid.detach() * loss_pos_num_valid
             if config["GEPC"]:
-                total_valid_gepc += loss_gepc_valid.detach() * bs_valid
-            processed_valid_samples += bs_valid
+                total_valid_gepc += loss_gepc_valid.detach() * loss_pos_num_valid
+            processed_valid_samples += loss_pos_num_valid
 
     avg_valid_loss = total_valid_loss / processed_valid_samples
     avg_valid_mse = total_valid_mse / processed_valid_samples
@@ -611,16 +635,16 @@ with torch.no_grad():
             else:
                 loss_gepc_final = torch.tensor(0.0).to(device)
 
-        bs_final = input_gene_ids_final.size(0)
-        total_final_valid_loss += loss_final.detach() * bs_final
-        total_final_valid_mse += loss_mse_final.detach() * bs_final
+        loss_pos_num_final = loss_positions_final.sum().detach()
+        total_final_valid_loss += loss_final.detach() * loss_pos_num_final
+        total_final_valid_mse += loss_mse_final.detach() * loss_pos_num_final
         if config["GEPC"]:
-            total_final_valid_gepc += loss_gepc_final.detach() * bs_final
-        processed_final_valid_samples += bs_final
+            total_final_valid_gepc += loss_gepc_final.detach() * loss_pos_num_final
+        processed_final_valid_samples += loss_pos_num_final
 
-avg_final_valid_loss = total_final_valid_loss / processed_final_valid_samples if processed_final_valid_samples > 0 else 0
-avg_final_valid_mse = total_final_valid_mse / processed_final_valid_samples if processed_final_valid_samples > 0 else 0
-avg_final_valid_gepc = total_final_valid_gepc / processed_final_valid_samples if processed_final_valid_samples > 0 else 0
+avg_final_valid_loss = total_final_valid_loss / processed_final_valid_samples
+avg_final_valid_mse = total_final_valid_mse / processed_final_valid_samples
+avg_final_valid_gepc = total_final_valid_gepc / processed_final_valid_samples
 if ddp:
     dist.all_reduce(avg_final_valid_loss, op=dist.ReduceOp.AVG)
     dist.all_reduce(avg_final_valid_mse, op=dist.ReduceOp.AVG)

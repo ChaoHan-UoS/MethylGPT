@@ -10,6 +10,7 @@
     "epochs": 10,
     "ecs_thres": 0.0,
     "lr": 0.001,
+    "grad_accum_steps": 1,
     "batch_size": 2,
     "layer_size": 64,
     "nlayers": 6,
