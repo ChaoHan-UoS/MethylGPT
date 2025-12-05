@@ -59,19 +59,19 @@ fi
 echo ""
 echo "--- Starting Training Step ---"
 
-python "${TRAIN_SCRIPT}" \
-    --config_file "${CONFIG_FILE}" \
-    --probe_id_path "${PROBE_ID_REF}" \
-    --parquet_data_dir "${PREPROCESSED_PARQUET_DIR}" \
-    --qced_metadata_path "${PREPROCESSED_METADATA_PATH}" \
-    "$@"           # additional args of the TRAIN_SCRIPT passed when invoking this bash script
-
-#torchrun --standalone --nproc_per_node=2 "${TRAIN_SCRIPT}" \
+#python "${TRAIN_SCRIPT}" \
 #    --config_file "${CONFIG_FILE}" \
 #    --probe_id_path "${PROBE_ID_REF}" \
 #    --parquet_data_dir "${PREPROCESSED_PARQUET_DIR}" \
 #    --qced_metadata_path "${PREPROCESSED_METADATA_PATH}" \
-#    "$@"
+#    "$@"           # additional args of the TRAIN_SCRIPT passed when invoking this bash script
+
+torchrun --standalone --nproc_per_node=2 "${TRAIN_SCRIPT}" \
+    --config_file "${CONFIG_FILE}" \
+    --probe_id_path "${PROBE_ID_REF}" \
+    --parquet_data_dir "${PREPROCESSED_PARQUET_DIR}" \
+    --qced_metadata_path "${PREPROCESSED_METADATA_PATH}" \
+    "$@"
 
 if [ $? -ne 0 ]; then
     echo "Training script exited with an error."

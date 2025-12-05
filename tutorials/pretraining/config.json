@@ -18,7 +18,7 @@
     "dropout": 0.1,
     "schedule_ratio": 0.9,
     "save_epoch_interval": 10,
-    "log_batch_interval": 100,
+    "log_batch_interval": 50,
     "pre_norm": true,
     "pad_token": "<pad>",
     "special_tokens": ["<pad>", "<cls>", "<eoc>"],
