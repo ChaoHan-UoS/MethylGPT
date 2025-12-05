@@ -95,7 +95,7 @@ if master_process and config_from_file.get("do_train", True):
             wandb.login()
             run = wandb.init(
                 project="MethyGPT",
-                name="pretrain-example-data",
+                name="pretrain-full-data",
                 config=config_from_file,
                 save_code=True,
             )
