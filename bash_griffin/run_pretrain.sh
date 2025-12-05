@@ -9,18 +9,17 @@
 export PYTHONUNBUFFERED=1  # Unbuffer Python output
 export WANDB_API_KEY=48436e46ea90de96edea92a6eea1c37e60083e4b
 
+module load apps/python/3.11.3
+
 nvidia-smi
 hostname  # Print compute node hostname
 pwd
 
 echo ""
-echo "Begin"
+echo "Running task ${SLURM_JOB_ID}"
 
-# Run the code from the task-specific dir
 cd "${TASK_DIR}/tutorials/pretraining"
 pwd
-
-echo "Running task ${SLURM_JOB_ID}"
 
 # Activate Poetry venv
 VENV_PATH=$(poetry env info --path)
