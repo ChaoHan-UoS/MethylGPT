@@ -12,12 +12,6 @@ export WANDB_API_KEY=48436e46ea90de96edea92a6eea1c37e60083e4b
 ## Make sure pipx / poetry are on PATH
 #export PATH="$HOME/.local/bin:$PATH"
 
-POETRY_BIN="$HOME/.local/bin/poetry"
-VENV_PATH=$(env -u PYTHONPATH "$POETRY_BIN" env info --path)
-echo "Poetry venv: $VENV_PATH"
-
-# Activate the venv
-source "${VENV_PATH}/bin/activate"
 
 module load apps/python/3.11.3
 
@@ -35,6 +29,14 @@ pwd
 #VENV_PATH=$(poetry env info --path)
 #source "${VENV_PATH}/bin/activate"
 
+# Activate the venv
+POETRY_BIN="$HOME/.local/bin/poetry"
+VENV_PATH=$(env -u PYTHONPATH "$POETRY_BIN" env info --path)
+echo "Poetry venv: $VENV_PATH"
+source "${VENV_PATH}/bin/activate"
+
+echo ""
 bash run_pretraining.sh
+echo ""
 
 echo "Task ${SLURM_JOB_ID} done"
